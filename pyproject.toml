@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scholar-lens"
+version = "0.1.0"
+description = "An end-to-end ML system for classifying arxiv paper categories that uses the transformer architecture and does interpretability analyses"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
