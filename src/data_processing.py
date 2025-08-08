@@ -96,7 +96,9 @@ def get_category_tags(example: Dict[str,List[str]], all_tags: OrderedDict) \
     # print(subjects)
     assert len(categories) == len(subjects)
 
-    # Selecting the first occurence as the label. In case the first occurence is a complete substring of subsequentt element then you want to select the subsequent element as that would be a more specific label
+    # Selecting the first occurence as the label. In case the first occurence is a 
+    # complete substring of subsequentt element then you want to select the subsequent 
+    # element as that would be a more specific label
 
     if len(categories) > 1:
         if any([categories[0] in c for c in categories[1:]]):
@@ -171,7 +173,7 @@ def get_category_label(example: List[str], category_label_mapping: Dict[str,int]
     return dict(label = label_[0])
 
 
-def process_dataset(dataset_identifier: str, config: Dict):
+def process_dataset(dataset_identifier: str, config: Dict, load_from_cache: bool = False):
 
     ds_raw = datasets.load_dataset(dataset_identifier, "default")
 
@@ -182,21 +184,23 @@ def process_dataset(dataset_identifier: str, config: Dict):
     print(f" Loaded {dataset_identifier}")
     all_tag_labels = get_tag_dict(ds_categories)
     print(f" Extracting category and subject-level information")
-    ds_raw = ds_raw.map(lambda x: get_category_tags(x, all_tag_labels),load_from_cache_file=False)
+    ds_raw = ds_raw.map(lambda x: get_category_tags(x, all_tag_labels),load_from_cache_file= load_from_cache )
     print(f" Cleaning input text ")
-    ds_raw = ds_raw.map(lambda x: create_input_from_abstract_title(x),load_from_cache_file=False)
+    ds_raw = ds_raw.map(lambda x: create_input_from_abstract_title(x),load_from_cache_file= load_from_cache )
 
     num_categories_to_retain_per_subject = config['top_k']
     subjects_to_retain = config['subjects']
     print(f"Retaining top {config['top_k']} categories in subjects: {', '.join(subjects_to_retain )}...")
 
+    # You want to maje sure that you select the top-k categories based only on the 
+    # training data distribution
+
     topk_category_counts_by_subject = get_topk_categories_by_subject(
                                     list(ds_raw["train"]['category']), 
                                     list(ds_raw["train"]['subject']), 
                                     k = num_categories_to_retain_per_subject)
-    # print(topk_category_counts_by_subject)
-    categories_retained = []
 
+    categories_retained = []
     for subj, (tag_counts) in topk_category_counts_by_subject.items():
         if subj in subjects_to_retain:
             categories_retained.append([k for (k, _) in tag_counts.items()])
@@ -211,5 +215,12 @@ def process_dataset(dataset_identifier: str, config: Dict):
     ds_filtered = ds_raw.filter(lambda x: x["category"] in categories_retained)
     print(f" Categories retained: {', '.join(categories_retained)}")    
     print(f"Mapping filtered examples to labels")
-    ds_filtered  = ds_filtered .map(lambda x: get_category_label(x, category_labels))
+    ds_filtered  = ds_filtered.map(lambda x: get_category_label(x, category_labels))
     return ds_filtered, category_labels
+
+# def get_input(ds):
+
+
+
+# def get_labels(ds):
+
