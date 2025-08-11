@@ -1,11 +1,14 @@
 import re
 from collections import OrderedDict, defaultdict, Counter
 from itertools import chain
-from datasets import Dataset
-from typing import List, Dict
+from datasets import Dataset, DatasetDict
+from typing import List, Dict, Tuple
 from bs4 import BeautifulSoup
 import datasets
 import random
+from config import DataConfig
+from pathlib import Path
+from transformers import AutoTokenizer
 
 random.seed(42)
 
@@ -76,8 +79,6 @@ def get_category_tags(example: Dict[str,List[str]], all_tags: OrderedDict) \
     categories = list(chain.from_iterable(categories))
     subjects = list(chain.from_iterable(subjects))
 
-    # print(categories)
-    # print(subjects)
 
     # The parse may have resulted in substrings that do not appear in our original
     # tag dictionary. Gotta remove those. For example:
@@ -173,24 +174,25 @@ def get_category_label(example: List[str], category_label_mapping: Dict[str,int]
     return dict(label = label_[0])
 
 
-def process_dataset(dataset_identifier: str, config: Dict, load_from_cache: bool = False):
+def _process_dataset(data_config:DataConfig) -> Tuple[DatasetDict, Dict]:
 
-    ds_raw = datasets.load_dataset(dataset_identifier, "default")
+    try:
+        ds_raw = datasets.load_dataset(data_config.dataset_identifier, "default")
+        ds_categories = datasets.load_dataset(data_config.dataset_identifier, 
+                                        "arxiv_category_descriptions",
+                                        split="arxiv_category_descriptions")
+    except ValueError as e:
+        print(e)
 
-    ds_categories = datasets.load_dataset(dataset_identifier, 
-                                    "arxiv_category_descriptions",
-                                    split="arxiv_category_descriptions")
-
-    print(f" Loaded {dataset_identifier}")
     all_tag_labels = get_tag_dict(ds_categories)
     print(f" Extracting category and subject-level information")
-    ds_raw = ds_raw.map(lambda x: get_category_tags(x, all_tag_labels),load_from_cache_file= load_from_cache )
+    ds_raw = ds_raw.map(lambda x: get_category_tags(x, all_tag_labels),load_from_cache_file= data_config.load_from_cache )
     print(f" Cleaning input text ")
-    ds_raw = ds_raw.map(lambda x: create_input_from_abstract_title(x),load_from_cache_file= load_from_cache )
+    ds_raw = ds_raw.map(lambda x: create_input_from_abstract_title(x),load_from_cache_file= data_config.load_from_cache )
 
-    num_categories_to_retain_per_subject = config['top_k']
-    subjects_to_retain = config['subjects']
-    print(f"Retaining top {config['top_k']} categories in subjects: {', '.join(subjects_to_retain )}...")
+    num_categories_to_retain_per_subject = data_config.num_categories_per_subject
+    subjects_to_retain = data_config.subjects
+    print(f"Retaining top { num_categories_to_retain_per_subject } categories in subjects: {', '.join(subjects_to_retain)}...")
 
     # You want to maje sure that you select the top-k categories based only on the 
     # training data distribution
@@ -218,9 +220,45 @@ def process_dataset(dataset_identifier: str, config: Dict, load_from_cache: bool
     ds_filtered  = ds_filtered.map(lambda x: get_category_label(x, category_labels))
     return ds_filtered, category_labels
 
-# def get_input(ds):
+def _tokenize_dataset(processed_data: DatasetDict, tokenizer_name: str) -> DatasetDict:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        print(f'Tokenizing using {tokenizer_name}')
+        return processed_data.map(lambda example: tokenizer(example["input"], 
+                                  padding="max_length", truncation=True),
+                                  batched=True)
 
 
+def _process_and_tokenize_dataset(data_config: DataConfig, tokenizer_name: str) -> DatasetDict:
+    processed, category_label_dict = _process_dataset(data_config)
+    return _tokenize_dataset(processed, tokenizer_name)
 
-# def get_labels(ds):
 
+def get_processed_dataset(data_config: DataConfig) -> DatasetDict:
+    cache_path = f"data/processed/{data_config.version_id}"
+    
+    if Path(cache_path).exists():
+        print(f'Loading processed dataset from cache path : {cache_path}')
+        return DatasetDict.load_from_disk(cache_path)
+    else:
+        print(f" Loading and preprocessing {data_config.dataset_identifier}...")
+        dataset = _process_dataset(data_config)
+        dataset.save_to_disk(cache_path)
+        return dataset
+
+def get_tokenized_dataset(data_config: DataConfig, tokenizer_name: str) -> DatasetDict:
+    
+    cache_path = f"data/tokenized/{data_config.version_id}"
+    processed_cache_path =  f"data/processed/{data_config.version_id}"
+    if Path(cache_path).exists():
+        print(f'Loading already tokenized dataset from cache path : {cache_path}')
+        return DatasetDict.load_from_disk(cache_path)
+    elif Path(processed_cache_path).exists():
+        print(f'Loading processed dataset from cache path : {processed_cache_path}')
+        dataset = DatasetDict.load_from_disk(processed_cache_path)
+        dataset = _tokenize_dataset(dataset, tokenizer_name)
+        dataset.save_to_disk(cache_path)
+    else:
+        print(f" Loading, preprocessing and tokenizing {data_config.dataset_identifier}...")
+        dataset = _process_and_tokenize_dataset(data_config)
+        dataset.save_to_disk(cache_path)
+        return dataset
