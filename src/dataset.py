@@ -1,0 +1,18 @@
+import torch
+from torch.utils.data import Dataset, DataLoader
+import datasets
+
+class ArxivDataset(Dataset):
+    def __init__(self, tokenized_dataset: datasets.Dataset)-> None:
+        valid_columns_names = ["input_ids", "attention_mask", "label", "input", "category"]
+        self.dataset = tokenized_dataset.remove_columns(
+            column_names=[k for k in tokenized_dataset.column_names if k not in valid_columns_names])
+    
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        return dict(input_ids = torch.tensor(item ["input_ids"]), # convert to pytorch tensor
+                    attention_mask = torch.tensor(item ["attention_mask"]),
+                    label = torch.tensor(item ["label"]))
+
+    def __len__(self):
+        return self.dataset.num_rows
