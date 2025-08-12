@@ -1,6 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
-import hashlib
 
 
 @dataclass
@@ -10,7 +9,7 @@ class DataConfig:
 
     dataset_identifier: str = "TimSchopf/arxiv_categories"
     load_from_cache: bool = False
-    subjects: List[str] = ['Physics', 'Mathematics', 'Computer Science']
+    subjects: List[str] = field(default_factory=lambda: ['Physics', 'Mathematics', 'Computer Science'])
     num_categories_per_subject: int = 8
 
     @property
