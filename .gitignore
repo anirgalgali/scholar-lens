@@ -7,8 +7,7 @@ dist/
 build/
 data/*
 docs/*
-models/*.pth
-models/*.pkl
+models/*
 *.h5
 .vscode/*
 .DS_Store

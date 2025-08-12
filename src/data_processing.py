@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple
 from bs4 import BeautifulSoup
 import datasets
 import random
-from config import DataConfig
+from src.config import DataConfig
 from pathlib import Path
 from transformers import AutoTokenizer
 
@@ -224,7 +224,8 @@ def _tokenize_dataset(processed_data: DatasetDict, tokenizer_name: str) -> Datas
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         print(f'Tokenizing using {tokenizer_name}')
         return processed_data.map(lambda example: tokenizer(example["input"], 
-                                  padding="max_length", truncation=True),
+                                  padding="max_length", truncation=True, 
+                                  max_length=512),
                                   batched=True)
 
 
@@ -234,21 +235,22 @@ def _process_and_tokenize_dataset(data_config: DataConfig, tokenizer_name: str) 
 
 
 def get_processed_dataset(data_config: DataConfig) -> DatasetDict:
-    cache_path = f"data/processed/{data_config.version_id}"
+    cache_path = f"./data/processed/{data_config.version_id}"
     
     if Path(cache_path).exists():
         print(f'Loading processed dataset from cache path : {cache_path}')
         return DatasetDict.load_from_disk(cache_path)
     else:
         print(f" Loading and preprocessing {data_config.dataset_identifier}...")
-        dataset = _process_dataset(data_config)
+        dataset, category_label_mapping = _process_dataset(data_config)
+        print(f" Saving processed data to {cache_path}...")
         dataset.save_to_disk(cache_path)
         return dataset
 
 def get_tokenized_dataset(data_config: DataConfig, tokenizer_name: str) -> DatasetDict:
     
-    cache_path = f"data/tokenized/{data_config.version_id}"
-    processed_cache_path =  f"data/processed/{data_config.version_id}"
+    cache_path = f"./data/tokenized/{data_config.version_id}"
+    processed_cache_path =  f"./data/processed/{data_config.version_id}"
     if Path(cache_path).exists():
         print(f'Loading already tokenized dataset from cache path : {cache_path}')
         return DatasetDict.load_from_disk(cache_path)
@@ -256,9 +258,17 @@ def get_tokenized_dataset(data_config: DataConfig, tokenizer_name: str) -> Datas
         print(f'Loading processed dataset from cache path : {processed_cache_path}')
         dataset = DatasetDict.load_from_disk(processed_cache_path)
         dataset = _tokenize_dataset(dataset, tokenizer_name)
+        print(f" Saving processed and tokenized data to {cache_path}...")
         dataset.save_to_disk(cache_path)
+        return dataset
     else:
         print(f" Loading, preprocessing and tokenizing {data_config.dataset_identifier}...")
         dataset = _process_and_tokenize_dataset(data_config)
+        print(f" Saving processed and tokenized data to {cache_path}...")
         dataset.save_to_disk(cache_path)
         return dataset
+    
+if __name__ == '__main__':
+
+    data_config = DataConfig()
+    tokenized_dataset = get_tokenized_dataset(data_config, tokenizer_name="distilbert/distilbert-base-uncased")
