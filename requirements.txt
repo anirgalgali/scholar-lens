@@ -5,6 +5,7 @@ datasets==4.0.0
 numpy==2.0.2
 pandas==2.3.1
 scikit-learn==1.7.1
+torchmetrics==1.8.1
 
 # MLOps
 wandb==0.21.0
