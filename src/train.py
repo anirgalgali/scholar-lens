@@ -5,14 +5,67 @@ from transformers import (
     DataCollatorWithPadding,
     AutoTokenizer,
     get_scheduler,
+    PreTrainedModel,
 )
 from torch.utils.data import DataLoader
-from torch.optim import AdamW
+from torch.optim.optimizer import Optimizer, AdamW
+from torch.optim.lr_scheduler import LRScheduler
 from src.dataset import ArxivDataset
 from src.data_processing import get_tokenized_dataset
 from tqdm.auto import tqdm
+import wandb
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class Trainer:
+
+    def __init__(
+        self,
+        model: PreTrainedModel,
+        optimizer: Optimizer,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        lr_scheduler: LRScheduler,
+        config: RunConfig,
+    ):
+
+        self.model = model
+        self.optimizer = optimizer
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.scheduler = lr_scheduler
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        wandb.init(
+            project="scholar-lens",
+            config={
+                "learning_rate": self.config.train.learning_rate,
+                "epochs": self.config.train.num_epochs,
+                "batch_size": self.config.train.batch_size,
+                "model_name": self.config.model.model_name,
+                "dataset_id": self.config.data.version_id,
+            },
+        )
+
+        self.model.to(self.device)
+        self.best_f1_score = 0.0
+
+    def train_one_epoch(self) -> float:
+        """Performs a single epoch of training"""
+
+        self.model.train()
+        total_loss = 0.0
+        for batch in self.train_loader:
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            self.optimizer.zero_grad()
+            model_logits = self.model(**batch)
+            batch_loss = model_logits.loss
+            batch_loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+            total_loss += batch_loss.item()
+
+        return total_loss / len(self.train_loader)
 
 
 def train(config: RunConfig):
@@ -51,16 +104,8 @@ def train(config: RunConfig):
 
     model.to(device)
 
-    # Checking if a single batch fits without issues (for debugging)
-    batch_iter = iter(train_dataloader)
-    progress_bar = tqdm(range(config.train.num_epochs))
     for epoch in range(config.train.num_epochs):
-        batch = {k: v.to(device) for k, v in next(batch_iter).items()}
-        outputs = model(**batch)
-        loss = outputs.loss
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+
         progress_bar.update(1)
         print(f"Epoch {epoch} - Loss = {loss.item()}")
 
