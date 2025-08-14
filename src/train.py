@@ -1,6 +1,11 @@
 import torch
 from src.config import ModelConfig, RunConfig
-from transformers import AutoModelForSequenceClassification,DataCollatorWithPadding, AutoTokenizer,PreTrainedModel
+from transformers import (
+    AutoModelForSequenceClassification,
+    DataCollatorWithPadding,
+    AutoTokenizer,
+    PreTrainedModel,
+)
 from torch.utils.data import DataLoader
 from torch.optim.optimizer import Optimizer, AdamW
 from torch.optim.lr_scheduler import LRScheduler
@@ -8,8 +13,14 @@ from src.dataset import ArxivDataset
 from src.data_processing import get_tokenized_dataset
 from tqdm.auto import tqdm
 import wandb
-from torchmetrics.classification import MulticlassF1Score, MulticlassAccuracy, MulticlassPrecision, MulticlassRecall
+from torchmetrics.classification import (
+    MulticlassF1Score,
+    MulticlassAccuracy,
+    MulticlassPrecision,
+    MulticlassRecall,
+)
 from torchmetrics import MetricCollection
+
 
 class Trainer:
 
@@ -37,7 +48,7 @@ class Trainer:
 
         if self.config.train.resume_from_checkpoint:
             ckpt_path = self.config.train.resume_from_checkpoint
-            self.run_id = ckpt_path.split('_')[0].split('-')[1] 
+            self.run_id = ckpt_path.split("_")[0].split("-")[1]
             self.load_from_checkpoint(ckpt_path)
 
         wandb.init(
@@ -74,12 +85,24 @@ class Trainer:
 
     def _evaluate(self) -> float:
 
-        self.mode.eval()
+        self.model.eval()
 
-        metric_collection = MetricCollection({'accuracy': MulticlassAccuracy(num_classes=self.config.model.num_classes, average='macro'),
-        'macro_precision': MulticlassPrecision(num_classes=self.config.model.num_classes, average='macro'),
-        'macro_recall': MulticlassRecall(num_classes=self.config.model.num_classes, average='macro'),
-        'macro_f1': MulticlassF1Score(num_classes=self.config.model.num_classes, average='macro')}).to(self.device)
+        metric_collection = MetricCollection(
+            {
+                "accuracy": MulticlassAccuracy(
+                    num_classes=self.config.model.num_classes, average="macro"
+                ),
+                "macro_precision": MulticlassPrecision(
+                    num_classes=self.config.model.num_classes, average="macro"
+                ),
+                "macro_recall": MulticlassRecall(
+                    num_classes=self.config.model.num_classes, average="macro"
+                ),
+                "macro_f1": MulticlassF1Score(
+                    num_classes=self.config.model.num_classes, average="macro"
+                ),
+            }
+        ).to(self.device)
 
         all_predictions = []
         all_labels = []
@@ -88,55 +111,66 @@ class Trainer:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 model_logits = self.model(**batch).logits
                 predicted_labels = torch.argmax(model_logits, dim=-1)
-                metric_collection.update(predicted_labels, batch['labels'])
+                metric_collection.update(predicted_labels, batch["labels"])
                 all_predictions.append(predicted_labels)
-                all_labels.append(batch['labels'])
-        
+                all_labels.append(batch["labels"])
+
         all_predictions = torch.cat(all_predictions).cpu().numpy()
-        all_labels= torch.cat(all_labels).cpu().numpy()
+        all_labels = torch.cat(all_labels).cpu().numpy()
         final_metrics = metric_collection.compute()
         return final_metrics, all_predictions, all_labels
-    
+
     def _save_checkpoint(self, current_f1_score: float, epoch: int):
 
         if current_f1_score > self.best_f1_score:
-        
+
             self.best_f1_score = current_f1_score
-            print(f"New best F1 score: {self.best_f1_score:.4f}. Saving model checkpoint...")
+            print(
+                f"New best F1 score: {self.best_f1_score:.4f}. Saving model checkpoint..."
+            )
             checkpoint = {
-            'epoch': epoch,
-            'best_f1_score': self.best_f1_score,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
+                "epoch": epoch,
+                "best_f1_score": self.best_f1_score,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict(),
             }
-        
+
             torch.save(checkpoint, f"run-{self.run_id}_best_model_checkpoint.pth")
 
     def load_from_checkpoint(self, checkpoint_path: str):
         print(f" Loading ckpt from : {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location = self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])   
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-        self.start_epoch = checkpoint['epoch'] + 1
-        self.best_f1_score = checkpoint['best_f1_score']
+        self.start_epoch = checkpoint["epoch"] + 1
+        self.best_f1_score = checkpoint["best_f1_score"]
         print(f"Resuming training from epoch {self.start_epoch}")
-
 
     def train(self):
         print(f" Starting training...")
         for epoch in range(self.config.train.num_epochs):
             avg_train_loss = self._train_one_epoch()
             val_metrics, ypred_val, ytrue_val = self._evaluate()
-            wandb.log({"epoch": epoch + 1,
-                       "avg_train_loss": avg_train_loss,
-                       "validation_metrics": val_metrics,
-                       "confusion_matrix": wandb.plot.confusion_matrix(preds = ypred_val,
-                                                                       y_true =ytrue_val,
-                                                                       class_names=)})  
-            self._save_checkpoint(val_metrics['macro_f1'], epoch + 1)
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "avg_train_loss": avg_train_loss,
+                    "validation_metrics": val_metrics,
+                    "confusion_matrix": wandb.plot.confusion_matrix(
+                        preds=ypred_val, y_true=ytrue_val, class_names=self.class_names
+                    ),
+                }
+            )
+            self._save_checkpoint(val_metrics["macro_f1"], epoch + 1)
+
+
+def run():
+    pass
+
+
 # def train(config: RunConfig):
 
 #     # Load processed data from disk

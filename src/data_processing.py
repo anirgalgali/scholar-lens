@@ -1,13 +1,15 @@
+import os
+from pathlib import Path
 import re
 from collections import OrderedDict, defaultdict, Counter
 from itertools import chain
-from datasets import Dataset, DatasetDict
 from typing import List, Dict, Tuple
 from bs4 import BeautifulSoup
-import datasets
+import json
+from datasets import Dataset, DatasetDict, load_dataset
 import random
 from src.config import DataConfig, ModelConfig
-from pathlib import Path
+
 from transformers import AutoTokenizer
 
 random.seed(42)
@@ -193,8 +195,8 @@ def get_category_label(
 def _process_dataset(data_config: DataConfig) -> Tuple[DatasetDict, Dict]:
 
     try:
-        ds_raw = datasets.load_dataset(data_config.dataset_identifier, "default")
-        ds_categories = datasets.load_dataset(
+        ds_raw = load_dataset(data_config.dataset_identifier, "default")
+        ds_categories = load_dataset(
             data_config.dataset_identifier,
             "arxiv_category_descriptions",
             split="arxiv_category_descriptions",
@@ -275,7 +277,8 @@ def _process_and_tokenize_dataset(
     data_config: DataConfig, model_config: ModelConfig
 ) -> DatasetDict:
     processed, category_label_dict = _process_dataset(data_config)
-    return _tokenize_dataset(processed, model_config)
+    tokenized = _tokenize_dataset(processed, model_config)
+    return tokenized, processed, category_label_dict
 
 
 def get_processed_dataset(data_config: DataConfig) -> DatasetDict:
@@ -289,6 +292,8 @@ def get_processed_dataset(data_config: DataConfig) -> DatasetDict:
         dataset, category_label_mapping = _process_dataset(data_config)
         print(f" Saving processed data to {cache_path}...")
         dataset.save_to_disk(cache_path)
+        with open(os.path.join(cache_path, "id2label.json"), "w") as f:
+            json.dump(category_label_mapping, f)
         return dataset
 
 
@@ -306,18 +311,27 @@ def get_tokenized_dataset(
     elif Path(processed_cache_path).exists():
         print(f"Loading processed dataset from cache path : {processed_cache_path}")
         dataset = DatasetDict.load_from_disk(processed_cache_path)
-        dataset = _tokenize_dataset(dataset, model_config)
+        tokenized_dataset = _tokenize_dataset(dataset, model_config)
         print(f" Saving processed and tokenized data to {cache_path}...")
-        dataset.save_to_disk(cache_path)
-        return dataset
+        tokenized_dataset.save_to_disk(cache_path)
+        return tokenized_dataset
     else:
         print(
             f" Loading, preprocessing and tokenizing {data_config.dataset_identifier}..."
         )
-        dataset = _process_and_tokenize_dataset(data_config, model_config)
-        print(f" Saving processed and tokenized data to {cache_path}...")
-        dataset.save_to_disk(cache_path)
-        return dataset
+        tokenized_dataset, processed_dataset, category_label_mapping = (
+            _process_and_tokenize_dataset(data_config, model_config)
+        )
+
+        print(f" Saving processed data to {processed_cache_path}...")
+        processed_dataset.save_to_disk(processed_cache_path)
+        with open(os.path.join(processed_cache_path, "id2label.json"), "w") as f:
+            json.dump(category_label_mapping, f)
+
+        print(f" Saving tokenized data to {cache_path}...")
+        tokenized_dataset.save_to_disk(cache_path)
+
+        return tokenized_dataset
 
 
 if __name__ == "__main__":
