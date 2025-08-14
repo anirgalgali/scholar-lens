@@ -61,6 +61,7 @@ class TrainingConfig:
     learning_rate: float = 2e-5
     num_epochs: int = 100
     batch_size: int = 64
+    resume_from_checkpoint: str = None
 
 
 @dataclass
