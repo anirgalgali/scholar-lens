@@ -1,15 +1,14 @@
+import os
+import json
 import torch
-from src.config import ModelConfig, RunConfig
-from transformers import (
-    AutoModelForSequenceClassification,
-    DataCollatorWithPadding,
-    AutoTokenizer,
-    PreTrainedModel,
-)
+from src.config import ModelConfig, RunConfig, TrainingConfig
+from src.models.model import create_model
+from transformers import AutoTokenizer, PreTrainedModel
 from torch.utils.data import DataLoader
-from torch.optim.optimizer import Optimizer, AdamW
-from torch.optim.lr_scheduler import LRScheduler
-from src.dataset import ArxivDataset
+from torch.optim import Optimizer, AdamW
+from transformers import get_linear_schedule_with_warmup
+from torch.optim.lr_scheduler import LRScheduler, LinearLR
+from src.dataset import create_dataloaders
 from src.data_processing import get_tokenized_dataset
 from tqdm.auto import tqdm
 import wandb
@@ -32,6 +31,7 @@ class Trainer:
         val_loader: DataLoader,
         lr_scheduler: LRScheduler,
         config: RunConfig,
+        class_names: list[str],
     ):
 
         self.model = model
@@ -40,19 +40,22 @@ class Trainer:
         self.val_loader = val_loader
         self.scheduler = lr_scheduler
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.start_epoch = 0
+        self.class_names = class_names
+
         self.run_id = None
+        self.start_epoch = 0
+        self.global_step = 0
         self.best_f1_score = 0.0
-        self.model.to(self.device)
 
         if self.config.train.resume_from_checkpoint:
             ckpt_path = self.config.train.resume_from_checkpoint
-            self.run_id = ckpt_path.split("_")[0].split("-")[1]
             self.load_from_checkpoint(ckpt_path)
 
         wandb.init(
             project="scholar-lens",
+            entity=os.getenv("WANDB_ENTITY"),
+            id=self.run_id,
+            resume="allow",
             config={
                 "learning_rate": self.config.train.learning_rate,
                 "epochs": self.config.train.num_epochs,
@@ -64,6 +67,9 @@ class Trainer:
 
         if self.run_id is None:
             self.run_id = wandb.run.id
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def _train_one_epoch(self) -> float:
         """Performs a single epoch of training"""
@@ -78,7 +84,8 @@ class Trainer:
             batch_loss.backward()
             self.optimizer.step()
             self.scheduler.step()
-            wandb.log({"train_batch_loss": batch_loss.item()})
+            wandb.log({"train_batch_loss": batch_loss.item()}, step=self.global_step)
+            self.global_step += 1
             total_loss += batch_loss.item()
 
         return total_loss / len(self.train_loader)
@@ -106,19 +113,22 @@ class Trainer:
 
         all_predictions = []
         all_labels = []
+        total_val_loss = 0.0
         with torch.no_grad():
             for batch in self.val_loader:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
-                model_logits = self.model(**batch).logits
-                predicted_labels = torch.argmax(model_logits, dim=-1)
+                model_outputs = self.model(**batch)
+                val_loss = model_outputs.loss
+                predicted_labels = torch.argmax(model_outputs.logits, dim=-1)
                 metric_collection.update(predicted_labels, batch["labels"])
                 all_predictions.append(predicted_labels)
                 all_labels.append(batch["labels"])
-
+                total_val_loss += val_loss.item()
+        avg_val_loss = total_val_loss / len(self.val_loader)
         all_predictions = torch.cat(all_predictions).cpu().numpy()
         all_labels = torch.cat(all_labels).cpu().numpy()
         final_metrics = metric_collection.compute()
-        return final_metrics, all_predictions, all_labels
+        return final_metrics, all_predictions, all_labels, avg_val_loss
 
     def _save_checkpoint(self, current_f1_score: float, epoch: int):
 
@@ -130,89 +140,107 @@ class Trainer:
             )
             checkpoint = {
                 "epoch": epoch,
+                "global_step": self.global_step,
                 "best_f1_score": self.best_f1_score,
                 "model_state_dict": self.model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "scheduler_state_dict": self.scheduler.state_dict(),
+                "run_id": self.run_id,
             }
 
-            torch.save(checkpoint, f"run-{self.run_id}_best_model_checkpoint.pth")
+            torch.save(
+                checkpoint, f"./models/checkpoints/run-{self.run_id}_best_model.pth"
+            )
 
     def load_from_checkpoint(self, checkpoint_path: str):
         print(f" Loading ckpt from : {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        if not self.config.train.reset_scheduler_on_load:
+            print(f"Scheduler state loaded from checkpoint.")
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            print(f"Scheduler state NOT loaded. A new scheduler will be used.")
 
         self.start_epoch = checkpoint["epoch"] + 1
+        self.global_step = checkpoint["global_step"]
         self.best_f1_score = checkpoint["best_f1_score"]
+        self.run_id = checkpoint["run_id"]
         print(f"Resuming training from epoch {self.start_epoch}")
 
     def train(self):
         print(f" Starting training...")
         for epoch in range(self.config.train.num_epochs):
             avg_train_loss = self._train_one_epoch()
-            val_metrics, ypred_val, ytrue_val = self._evaluate()
+            val_metrics, ypred_val, ytrue_val, avg_val_loss = self._evaluate()
             wandb.log(
                 {
                     "epoch": epoch + 1,
                     "avg_train_loss": avg_train_loss,
+                    "avg_val_loss": avg_val_loss,
                     "validation_metrics": val_metrics,
                     "confusion_matrix": wandb.plot.confusion_matrix(
                         preds=ypred_val, y_true=ytrue_val, class_names=self.class_names
                     ),
-                }
+                },
+                step=self.global_step,
+            )
+
+            print(
+                f"Epoch-{epoch}: Avg_train_loss={avg_train_loss}, Avg_val_loss={avg_val_loss}"
             )
             self._save_checkpoint(val_metrics["macro_f1"], epoch + 1)
 
-
-def run():
-    pass
-
-
-# def train(config: RunConfig):
-
-#     # Load processed data from disk
-#     num_classes = len(config.data.subjects) * config.data.num_categories_per_subject
-#     model_config = ModelConfig(num_classes=num_classes)
-#     config.model = model_config  # monkey patch the changed model config class
-#     processed_dataset = get_tokenized_dataset(config.data, config.model)
-
-#     tokenizer = AutoTokenizer.from_pretrained(config.model.model_name)
-#     data_collator = DataCollatorWithPadding(tokenizer)
-
-#     # Create pytorch dataloaders for train, val splits from the loaded dataset
-#     train_dataloader = DataLoader(
-#         ArxivDataset(processed_dataset["train"]),
-#         batch_size=64,
-#         shuffle=True,
-#         num_workers=0,
-#         collate_fn=data_collator,
-#     )
-
-#     val_dataloader = DataLoader(
-#         ArxivDataset(processed_dataset["validation"]),
-#         batch_size=64,
-#         shuffle=True,
-#         num_workers=0,
-#         collate_fn=data_collator,
-#     )
-
-#     model = AutoModelForSequenceClassification.from_pretrained(
-#         config.model.model_name, num_labels=config.model.num_classes
-#     )
-
-#     optimizer = AdamW(model.parameters(), lr=config.train.learning_rate)
-
-#     model.to(device)
-
-#     for epoch in range(config.train.num_epochs):
-
-#         progress_bar.update(1)
-#         print(f"Epoch {epoch} - Loss = {loss.item()}")
+        wandb.finish()
+        print("Training complete.")
 
 
-# if __name__ == "__main__":
-#     config = RunConfig()
-#     train(config)
+def run(config: RunConfig):
+
+    processed_cache_path = f"./data/processed/{config.data.version_id}"
+    try:
+        with open(os.path.join(processed_cache_path, "id2label.json"), "r") as f:
+            id2label = json.load(f)
+    except FileNotFoundError as e:
+        return
+
+    class_names = list(id2label.keys())
+    num_classes = len(class_names)
+
+    model_config = ModelConfig(num_classes=num_classes)
+    config.model = model_config  # update the num_classes in model_config
+
+    dataset = get_tokenized_dataset(config.data, config.model)
+
+    tokenizer = AutoTokenizer.from_pretrained(config.model.model_name)
+    train_dataloader, val_dataloader, test_dataloader = create_dataloaders(
+        dataset, tokenizer, config.train
+    )
+    model = create_model(config.model)
+    optimizer = AdamW(model.parameters(), lr=config.train.learning_rate)
+    num_total_grad_steps = config.train.num_epochs * len(train_dataloader)
+
+    lr_scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int(0.1 * num_total_grad_steps),
+        num_training_steps=num_total_grad_steps,
+    )
+
+    trainer = Trainer(
+        model,
+        optimizer,
+        train_dataloader,
+        val_dataloader,
+        lr_scheduler,
+        config,
+        class_names=class_names,
+    )
+
+    trainer.train()
+
+
+if __name__ == "__main__":
+    config = RunConfig()
+    run(config)

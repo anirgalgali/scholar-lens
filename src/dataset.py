@@ -1,8 +1,9 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from datasets import DatasetDict,Dataset
+from datasets import DatasetDict, Dataset
 from transformers import PreTrainedTokenizerFast, DataCollatorWithPadding
 from src.config import TrainingConfig
+
 
 class ArxivDataset(Dataset):
     def __init__(self, tokenized_dataset: Dataset) -> None:
@@ -24,18 +25,20 @@ class ArxivDataset(Dataset):
     def __getitem__(self, idx):
         item = self.dataset[idx]
         return dict(
-            input_ids=torch.tensor(item["input_ids"]),  # convert to pytorch tensor
-            attention_mask=torch.tensor(item["attention_mask"]),
-            labels=torch.tensor(item["label"]),
+            input_ids=item["input_ids"],  # convert to pytorch tensor
+            attention_mask=item["attention_mask"],
+            labels=item["label"],
         )
 
     def __len__(self):
         return self.dataset.num_rows
 
 
-def create_dataloaders(tokenized_data:DatasetDict, 
-                       tokenizer: PreTrainedTokenizerFast,
-                       config: TrainingConfig) -> tuple:
+def create_dataloaders(
+    tokenized_data: DatasetDict,
+    tokenizer: PreTrainedTokenizerFast,
+    config: TrainingConfig,
+) -> tuple:
 
     data_collator = DataCollatorWithPadding(tokenizer)
 

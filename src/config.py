@@ -59,10 +59,10 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     learning_rate: float = 2e-5
-    num_epochs: int = 100
-    batch_size: int = 64
+    num_epochs: int = 3
+    batch_size: int = 128
     resume_from_checkpoint: str = None
-
+    reset_scheduler_on_load: bool = False
 
 @dataclass
 class RunConfig:
