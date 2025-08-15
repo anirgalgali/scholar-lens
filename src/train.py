@@ -10,6 +10,7 @@ from transformers import get_linear_schedule_with_warmup
 from torch.optim.lr_scheduler import LRScheduler, LinearLR
 from src.dataset import create_dataloaders
 from src.data_processing import get_tokenized_dataset
+from src.plotting import plot_confusion_matrix_heatmap
 from tqdm.auto import tqdm
 import wandb
 from torchmetrics.classification import (
@@ -69,7 +70,14 @@ class Trainer:
             self.run_id = wandb.run.id
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.model.to(self.device)
+        self.metric_collection = MetricCollection({
+            'macro_accuracy': MulticlassAccuracy(num_classes=config.model.num_classes, average='macro'),
+            'macro_f1': MulticlassF1Score(num_classes=config.model.num_classes, average='macro'),
+            'macro_precision': MulticlassPrecision(num_classes=config.model.num_classes, average='macro'),
+            'macro_recall': MulticlassRecall(num_classes=config.model.num_classes, average='macro') }).to(self.device)
+
 
     def _train_one_epoch(self) -> float:
         """Performs a single epoch of training"""
@@ -86,49 +94,49 @@ class Trainer:
             self.scheduler.step()
             wandb.log({"train_batch_loss": batch_loss.item()}, step=self.global_step)
             self.global_step += 1
-            total_loss += batch_loss.item()
+            batch_size = batch['input_ids'].shape[0]
+            total_loss += batch_loss.item() * batch_size
 
-        return total_loss / len(self.train_loader)
+            if self.global_step % self.config.train.eval_every_n_steps == 0:
+                print(f"--- Intra-epoch eval at step {self.global_step}---")
+                eval_results = self._evaluate()
+                wandb.log(eval_results,
+                step=self.global_step)
 
-    def _evaluate(self) -> float:
+        return total_loss / len(self.train_loader.dataset) # This is the average per_sample loss
+
+    def _evaluate(self, compute_all_metrics: bool = False) -> float:
 
         self.model.eval()
 
-        metric_collection = MetricCollection(
-            {
-                "accuracy": MulticlassAccuracy(
-                    num_classes=self.config.model.num_classes, average="macro"
-                ),
-                "macro_precision": MulticlassPrecision(
-                    num_classes=self.config.model.num_classes, average="macro"
-                ),
-                "macro_recall": MulticlassRecall(
-                    num_classes=self.config.model.num_classes, average="macro"
-                ),
-                "macro_f1": MulticlassF1Score(
-                    num_classes=self.config.model.num_classes, average="macro"
-                ),
-            }
-        ).to(self.device)
+        if compute_all_metrics:
+            self.metric_collection.reset()
+            all_predictions = []
+            all_labels = []
 
-        all_predictions = []
-        all_labels = []
         total_val_loss = 0.0
         with torch.no_grad():
             for batch in self.val_loader:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 model_outputs = self.model(**batch)
                 val_loss = model_outputs.loss
-                predicted_labels = torch.argmax(model_outputs.logits, dim=-1)
-                metric_collection.update(predicted_labels, batch["labels"])
-                all_predictions.append(predicted_labels)
-                all_labels.append(batch["labels"])
-                total_val_loss += val_loss.item()
-        avg_val_loss = total_val_loss / len(self.val_loader)
-        all_predictions = torch.cat(all_predictions).cpu().numpy()
-        all_labels = torch.cat(all_labels).cpu().numpy()
-        final_metrics = metric_collection.compute()
-        return final_metrics, all_predictions, all_labels, avg_val_loss
+                batch_size = batch['input_ids'].shape[0]
+                total_val_loss += val_loss.item() * batch_size
+
+                if compute_all_metrics:
+                    predicted_labels = torch.argmax(model_outputs.logits, dim=-1)
+                    self.metric_collection.update(predicted_labels, batch["labels"])
+                    all_predictions.append(predicted_labels)
+                    all_labels.append(batch["labels"]) 
+
+        avg_val_loss = total_val_loss / len(self.val_loader.dataset)  # This is the average per_sample loss
+        results = {"avg_val_loss": avg_val_loss}
+        if compute_all_metrics:
+            results["validation_metrics"] = {k: v.item() for k, v in self.metric_collection.compute().items()}
+            results["val_pred_labels"] = torch.cat(all_predictions).cpu().numpy()
+            results["val_true_labels"] = torch.cat(all_labels).cpu().numpy()
+        
+        return results
 
     def _save_checkpoint(self, current_f1_score: float, epoch: int):
 
@@ -174,24 +182,22 @@ class Trainer:
         print(f" Starting training...")
         for epoch in range(self.config.train.num_epochs):
             avg_train_loss = self._train_one_epoch()
-            val_metrics, ypred_val, ytrue_val, avg_val_loss = self._evaluate()
+            eval_results = self._evaluate(compute_all_metrics=True)
+            cm_image = plot_confusion_matrix_heatmap(eval_results['val_true_labels'],
+                                                     eval_results['val_pred_labels'],
+                                                     self.class_names,
+                                                     do_log = True)
             wandb.log(
-                {
-                    "epoch": epoch + 1,
+                {"epoch": epoch + 1,
                     "avg_train_loss": avg_train_loss,
-                    "avg_val_loss": avg_val_loss,
-                    "validation_metrics": val_metrics,
-                    "confusion_matrix": wandb.plot.confusion_matrix(
-                        preds=ypred_val, y_true=ytrue_val, class_names=self.class_names
-                    ),
-                },
-                step=self.global_step,
+                    "avg_val_loss": eval_results['avg_val_loss'],
+                    "validation_metrics": eval_results['validation_metrics'],
+                    "confusion_matrix": cm_image},
+                step=self.global_step
             )
 
-            print(
-                f"Epoch-{epoch}: Avg_train_loss={avg_train_loss}, Avg_val_loss={avg_val_loss}"
-            )
-            self._save_checkpoint(val_metrics["macro_f1"], epoch + 1)
+            print( f"Epoch-{epoch}: Avg_train_loss={avg_train_loss}, Avg_val_loss={eval_results['avg_val_loss']}")
+            self._save_checkpoint(eval_results["validation_metrics"]["macro_f1"], epoch + 1)
 
         wandb.finish()
         print("Training complete.")
@@ -219,6 +225,9 @@ def run(config: RunConfig):
         dataset, tokenizer, config.train
     )
     model = create_model(config.model)
+    if config.train.weight_decay is not None:
+        optimizer = AdamW(model.parameters(),weight_decay=config.train.weight_decay, lr=config.train.learning_rate)
+
     optimizer = AdamW(model.parameters(), lr=config.train.learning_rate)
     num_total_grad_steps = config.train.num_epochs * len(train_dataloader)
 
