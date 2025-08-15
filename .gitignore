@@ -14,3 +14,4 @@ models/*
 Thumbs.db
 .ipynb_checkpoints/
 .pytest_cache
+wandb/*
