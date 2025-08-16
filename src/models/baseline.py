@@ -158,10 +158,9 @@ def generate_gridsearch_versionid(grid_params):
 
 if __name__ == '__main__':
 
-    data_config = DataConfig()    
+    data_config = DataConfig(num_categories_per_subject=15)    
     cv_param_grid = {
     'tfidf__max_features': [1000, 5000, 10000, 20000],
     'tfidf__ngram_range': [(1,2),(1,3)],
-    'classifier__C': [0.1, 1.0, 10.0]   
-    }
+    'classifier__C': [0.1, 1.0, 10.0]}
     grid_search, best_model, test_evaluation_metrics = main(data_config, cv_param_grid)

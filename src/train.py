@@ -1,7 +1,7 @@
 import os
 import json
 import torch
-from src.config import ModelConfig, RunConfig, TrainingConfig
+from src.config import ModelConfig, RunConfig, TrainingConfig, DataConfig
 from src.models.model import create_model
 from transformers import AutoTokenizer, PreTrainedModel
 from torch.utils.data import DataLoader
@@ -36,6 +36,9 @@ class Trainer:
     ):
 
         self.model = model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+
         self.optimizer = optimizer
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -69,15 +72,22 @@ class Trainer:
         if self.run_id is None:
             self.run_id = wandb.run.id
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.model.to(self.device)
-        self.metric_collection = MetricCollection({
-            'macro_accuracy': MulticlassAccuracy(num_classes=config.model.num_classes, average='macro'),
-            'macro_f1': MulticlassF1Score(num_classes=config.model.num_classes, average='macro'),
-            'macro_precision': MulticlassPrecision(num_classes=config.model.num_classes, average='macro'),
-            'macro_recall': MulticlassRecall(num_classes=config.model.num_classes, average='macro') }).to(self.device)
-
+        self.metric_collection = MetricCollection(
+            {
+                "macro_accuracy": MulticlassAccuracy(
+                    num_classes=config.model.num_classes, average="macro"
+                ),
+                "macro_f1": MulticlassF1Score(
+                    num_classes=config.model.num_classes, average="macro"
+                ),
+                "macro_precision": MulticlassPrecision(
+                    num_classes=config.model.num_classes, average="macro"
+                ),
+                "macro_recall": MulticlassRecall(
+                    num_classes=config.model.num_classes, average="macro"
+                ),
+            }
+        ).to(self.device)
 
     def _train_one_epoch(self) -> float:
         """Performs a single epoch of training"""
@@ -94,16 +104,17 @@ class Trainer:
             self.scheduler.step()
             wandb.log({"train_batch_loss": batch_loss.item()}, step=self.global_step)
             self.global_step += 1
-            batch_size = batch['input_ids'].shape[0]
+            batch_size = batch["input_ids"].shape[0]
             total_loss += batch_loss.item() * batch_size
 
             if self.global_step % self.config.train.eval_every_n_steps == 0:
                 print(f"--- Intra-epoch eval at step {self.global_step}---")
                 eval_results = self._evaluate()
-                wandb.log(eval_results,
-                step=self.global_step)
+                wandb.log(eval_results, step=self.global_step)
 
-        return total_loss / len(self.train_loader.dataset) # This is the average per_sample loss
+        return total_loss / len(
+            self.train_loader.dataset
+        )  # This is the average per_sample loss
 
     def _evaluate(self, compute_all_metrics: bool = False) -> float:
 
@@ -120,22 +131,26 @@ class Trainer:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 model_outputs = self.model(**batch)
                 val_loss = model_outputs.loss
-                batch_size = batch['input_ids'].shape[0]
+                batch_size = batch["input_ids"].shape[0]
                 total_val_loss += val_loss.item() * batch_size
 
                 if compute_all_metrics:
                     predicted_labels = torch.argmax(model_outputs.logits, dim=-1)
                     self.metric_collection.update(predicted_labels, batch["labels"])
                     all_predictions.append(predicted_labels)
-                    all_labels.append(batch["labels"]) 
+                    all_labels.append(batch["labels"])
 
-        avg_val_loss = total_val_loss / len(self.val_loader.dataset)  # This is the average per_sample loss
+        avg_val_loss = total_val_loss / len(
+            self.val_loader.dataset
+        )  # This is the average per_sample loss
         results = {"avg_val_loss": avg_val_loss}
         if compute_all_metrics:
-            results["validation_metrics"] = {k: v.item() for k, v in self.metric_collection.compute().items()}
+            results["validation_metrics"] = {
+                k: v.item() for k, v in self.metric_collection.compute().items()
+            }
             results["val_pred_labels"] = torch.cat(all_predictions).cpu().numpy()
             results["val_true_labels"] = torch.cat(all_labels).cpu().numpy()
-        
+
         return results
 
     def _save_checkpoint(self, current_f1_score: float, epoch: int):
@@ -173,7 +188,7 @@ class Trainer:
             print(f"Scheduler state NOT loaded. A new scheduler will be used.")
 
         self.start_epoch = checkpoint["epoch"] + 1
-        self.global_step = checkpoint["global_step"]
+        self.global_step = checkpoint["global_step"]+1
         self.best_f1_score = checkpoint["best_f1_score"]
         self.run_id = checkpoint["run_id"]
         print(f"Resuming training from epoch {self.start_epoch}")
@@ -183,21 +198,29 @@ class Trainer:
         for epoch in range(self.config.train.num_epochs):
             avg_train_loss = self._train_one_epoch()
             eval_results = self._evaluate(compute_all_metrics=True)
-            cm_image = plot_confusion_matrix_heatmap(eval_results['val_true_labels'],
-                                                     eval_results['val_pred_labels'],
-                                                     self.class_names,
-                                                     do_log = True)
+            cm_image = plot_confusion_matrix_heatmap(
+                eval_results["val_true_labels"],
+                eval_results["val_pred_labels"],
+                self.class_names,
+                do_log=True,
+            )
             wandb.log(
-                {"epoch": epoch + 1,
+                {
+                    "epoch": epoch + 1,
                     "avg_train_loss": avg_train_loss,
-                    "avg_val_loss": eval_results['avg_val_loss'],
-                    "validation_metrics": eval_results['validation_metrics'],
-                    "confusion_matrix": cm_image},
-                step=self.global_step
+                    "avg_val_loss": eval_results["avg_val_loss"],
+                    "validation_metrics": eval_results["validation_metrics"],
+                    "confusion_matrix": cm_image,
+                },
+                step=self.global_step,
             )
 
-            print( f"Epoch-{epoch}: Avg_train_loss={avg_train_loss}, Avg_val_loss={eval_results['avg_val_loss']}")
-            self._save_checkpoint(eval_results["validation_metrics"]["macro_f1"], epoch + 1)
+            print(
+                f"Epoch-{epoch}: Avg_train_loss={avg_train_loss}, Avg_val_loss={eval_results['avg_val_loss']}"
+            )
+            self._save_checkpoint(
+                eval_results["validation_metrics"]["macro_f1"], epoch + 1
+            )
 
         wandb.finish()
         print("Training complete.")
@@ -226,7 +249,11 @@ def run(config: RunConfig):
     )
     model = create_model(config.model)
     if config.train.weight_decay is not None:
-        optimizer = AdamW(model.parameters(),weight_decay=config.train.weight_decay, lr=config.train.learning_rate)
+        optimizer = AdamW(
+            model.parameters(),
+            weight_decay=config.train.weight_decay,
+            lr=config.train.learning_rate,
+        )
 
     optimizer = AdamW(model.parameters(), lr=config.train.learning_rate)
     num_total_grad_steps = config.train.num_epochs * len(train_dataloader)
@@ -251,5 +278,12 @@ def run(config: RunConfig):
 
 
 if __name__ == "__main__":
-    config = RunConfig()
+    data_config = DataConfig(num_categories_per_subject=15)
+    train_config = TrainingConfig(
+        learning_rate=2e-5,
+        resume_from_checkpoint="./models/checkpoints/run-4s4bcaug_best_model.pth",
+        num_epochs=3,
+        reset_scheduler_on_load=True,
+    )
+    config = RunConfig(data=data_config, train=train_config)
     run(config)

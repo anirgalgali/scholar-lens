@@ -12,6 +12,7 @@ class DataConfig:
         default_factory=lambda: ["Physics", "Mathematics", "Computer Science"]
     )
     num_categories_per_subject: int = 8
+    random_state: int = 42
 
     @property
     def version_id(self) -> str:
@@ -65,6 +66,7 @@ class TrainingConfig:
     resume_from_checkpoint: str = None
     reset_scheduler_on_load: bool = False
     eval_every_n_steps: int = 250
+
 
 @dataclass
 class RunConfig:
