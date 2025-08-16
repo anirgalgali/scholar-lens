@@ -9,10 +9,11 @@ import json
 from datasets import Dataset, DatasetDict, load_dataset
 import random
 from src.config import DataConfig, ModelConfig
-
+import numpy as np
+import pandas as pd
 from transformers import AutoTokenizer
 
-random.seed(42)
+# random.seed(42)
 
 
 def match_category_pattern(input_string: str) -> str:
@@ -74,7 +75,7 @@ def get_category_tags(
             continue
 
     if len(categories) == 0:
-        return dict(category=None, subject=None)
+        return dict(primary_category=None, subject=None)
 
     # This removes repeated elements such as:
     # astro-ph->astro-ph->astro-ph.CO returing only [astro-ph, astro-ph.CO]
@@ -108,11 +109,11 @@ def get_category_tags(
 
     if len(categories) > 1:
         if any([categories[0] in c for c in categories[1:]]):
-            return dict(category=categories[1], subject=subjects[0].rstrip(" "))
+            return dict(primary_category=categories[1], subject=subjects[0].rstrip(" "))
         else:
-            return dict(category=categories[0], subject=subjects[0].rstrip(" "))
+            return dict(primary_category=categories[0], subject=subjects[0].rstrip(" "))
 
-    return dict(category=categories[0], subject=subjects[0].rstrip(" "))
+    return dict(primary_category=categories[0], subject=subjects[0].rstrip(" "))
 
 
 def get_category_label(
@@ -192,7 +193,56 @@ def get_category_label(
     return dict(label=label_[0])
 
 
+def extract_category_stats_for_relabeling(train_dataset: Dataset):
+
+    df = train_dataset.to_pandas()
+    unique_labels = df["primary_category"].unique()
+
+    parent_labels = set()
+    for label_a in unique_labels:
+        for label_b in unique_labels:
+            if label_a != label_b and label_b.startswith(label_a + "."):
+                parent_labels.add(label_a)
+
+    print(f"Found parent categories: {list(parent_labels)}")
+
+    relabel_plan = {}
+    for parent in parent_labels:
+        # Filter for rows where the label is a specific sub-category of the parent
+        children_df = df[df["primary_category"].str.startswith(parent + ".")]
+        if not children_df.empty:
+            proportions = children_df["primary_category"].value_counts(normalize=True)
+            relabel_plan[parent] = {
+                "children": proportions.index.tolist(),
+                "probs": proportions.values.tolist(),
+            }
+
+    return relabel_plan
+
+
+def apply_relabeling_batch(batch, relabel_plan, rng=np.random.default_rng()):
+    """
+    A function to be used with .map() to apply the re-labeling plan.
+    """
+
+    new_labels = []
+    # 'primary_label' is the column of initially parsed labels
+    for label in batch["primary_category"]:
+        if label in relabel_plan:
+            # This is a incomplete parent label, so we sample a child from subcategories
+            plan = relabel_plan[label]
+            new_labels.append(rng.choice(plan["children"], p=plan["probs"]))
+        else:
+            # This is not a incomplete label, so we keep the original
+            new_labels.append(label)
+
+    batch["category"] = new_labels
+    return batch
+
+
 def _process_dataset(data_config: DataConfig) -> Tuple[DatasetDict, Dict]:
+
+    rng = np.random.default_rng(data_config.random_state)
 
     try:
         ds_raw = load_dataset(data_config.dataset_identifier, "default")
@@ -210,6 +260,20 @@ def _process_dataset(data_config: DataConfig) -> Tuple[DatasetDict, Dict]:
         lambda x: get_category_tags(x, all_tag_labels),
         load_from_cache_file=data_config.load_from_cache,
     )
+
+    relabel_plan = extract_category_stats_for_relabeling(ds_raw["train"])
+    print(f"Generated Re-labeling Plan: {relabel_plan}")
+
+    # 2. Apply the plan to all splits (train, validation, and test)
+    ds_raw = ds_raw.map(
+        apply_relabeling_batch,
+        batched=True,
+        fn_kwargs={
+            "relabel_plan": relabel_plan,
+            "rng": rng,
+        },  # Pass the plan to the map function
+    )
+
     print(f" Cleaning input text ")
     ds_raw = ds_raw.map(
         lambda x: create_input_from_abstract_title(x),
@@ -238,7 +302,7 @@ def _process_dataset(data_config: DataConfig) -> Tuple[DatasetDict, Dict]:
     categories_retained = list(chain.from_iterable(categories_retained))
 
     # Shuffling the categories to ensure that they aren't organized by subject
-    random.shuffle(categories_retained)
+    rng.shuffle(categories_retained)
     category_labels = dict()
     for i, tag in enumerate(categories_retained):
         category_labels[tag] = i
@@ -336,7 +400,7 @@ def get_tokenized_dataset(
 
 if __name__ == "__main__":
 
-    data_config = DataConfig()
+    data_config = DataConfig(num_categories_per_subject=15)
     num_classes = len(data_config.subjects) * data_config.num_categories_per_subject
     model_config = ModelConfig(num_classes=num_classes)
     tokenized_dataset = get_tokenized_dataset(data_config, model_config)
