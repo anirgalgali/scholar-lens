@@ -104,7 +104,7 @@ class NumpySnapshot:
 class Snapshot:
     def __init__(
         self,
-        snapshot_dir: str = "tests/_snapshots",
+        snapshot_dir: str = "./src/mintransformer/tests/_snapshots",
         default_force_update: bool = False,
         default_test_name: str | None = None,
     ):
