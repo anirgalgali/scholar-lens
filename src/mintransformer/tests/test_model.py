@@ -9,7 +9,7 @@ from mintransformer.layers import (
     LayerNorm,
     PositionWiseFeedForward,
 )
-from mintransformer.activations import SiLU
+from src.mintransformer.functional import SiLU
 
 
 def test_linear(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
