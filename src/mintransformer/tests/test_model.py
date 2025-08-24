@@ -2,7 +2,14 @@ from einops import rearrange
 import numpy
 import torch
 import torch.nn.functional as F
-from mintransformer.layers import Linear, Embedding, RMSNorm, LayerNorm
+from mintransformer.layers import (
+    Linear,
+    Embedding,
+    RMSNorm,
+    LayerNorm,
+    PositionWiseFeedForward,
+)
+from mintransformer.activations import SiLU
 
 
 def test_linear(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
@@ -46,3 +53,24 @@ def test_layernorm(in_embeddings):
         my_output, reference_output, atol=1e-6
     ), "Forward pass outputs do not match!"
 
+def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
+    w1_weight, w2_weight, w3_weight = [
+        ts_state_dict[0][f"layers.0.ffn.{k}.weight"] for k in ["w1", "w2", "w3"]
+    ]
+
+    swiglu = PositionWiseFeedForward(
+        embedding_dim=d_model,
+        ff_dim=d_ff,
+        activation=SiLU(),
+        device="cpu",
+        dtype=torch.float32,
+    )
+    swiglu.load_state_dict(
+        {
+            "glu.proj_up.weight": w1_weight,
+            "glu.proj_gate.weight": w3_weight,
+            "output.weight": w2_weight,
+        }
+    )
+    actual_output = swiglu(in_embeddings)
+    numpy_snapshot.assert_match(actual_output, atol=1e-5)

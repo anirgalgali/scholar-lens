@@ -3,12 +3,13 @@ import torch.nn as nn
 import math
 
 
+#### LINEAR AND GATED-LINEAR LAYERS
 class Linear(nn.Module):
     def __init__(
         self,
         in_features: int,
         out_features: int,
-        bias: bool = True,
+        bias: bool = False,
         device=None,
         dtype=None,
     ):
@@ -49,6 +50,37 @@ class Linear(nn.Module):
         return input @ self.weight.T
 
 
+class GatedLinearUnit(nn.Module):
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        activation: nn.Module,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.activation = activation
+        self.device = device
+        self.dtype = dtype
+        self.proj_up = Linear(
+            self.in_features, self.out_features, device=self.device, dtype=self.dtype
+        )
+        self.proj_gate = Linear(
+            self.in_features, self.out_features, device=self.device, dtype=self.dtype
+        )
+        self.activation = activation
+
+    def forward(self, input):
+        out_proj = self.proj_up(input)
+        out_gate = self.proj_gate(input)
+        return self.activation(out_proj) * out_gate
+
+
+#### EMBEDDING AND UNEMBEDDING LAYERS
 class Embedding(nn.Module):
 
     def __init__(
@@ -74,6 +106,7 @@ class Embedding(nn.Module):
         return self.weight[token_ids]
 
 
+#### NORMALIZATION LAYERS (LAYERNORM & RMSNORM)
 class LayerNorm(nn.Module):
 
     def __init__(
@@ -147,3 +180,37 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(torch.mean(input**2, dim=-1, keepdim=True) + self.eps)
         output = (input / rms) * self.weight[None, None, :]
         return output.to(in_dtype)
+
+
+#### POSITION-WISE FEED-FORWaRD NETWORK
+class PositionWiseFeedForward(nn.Module):
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        ff_dim: int,
+        activation=nn.Module,
+        device=None,
+        dtype=None,
+    ):
+
+        super().__init__()
+        self.d_model = embedding_dim
+        self.d_ff = ff_dim
+        self.activation = activation
+        self.device = device
+        self.dtype = dtype
+        self.glu = GatedLinearUnit(
+            in_features=self.d_model,
+            out_features=self.d_ff,
+            activation=self.activation,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.output = Linear(
+            in_features=self.d_ff, out_features=self.d_model, device=device, dtype=dtype
+        )
+
+    def forward(self, input):
+        hidden = self.glu(input)
+        return self.output(hidden)
