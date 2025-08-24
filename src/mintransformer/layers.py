@@ -227,6 +227,7 @@ class MultiHeadSelfAttention(nn.Module):
         self,
         embedding_dim: int,
         n_heads: int,
+        max_seq_len: int,
         use_causal_mask: bool = True,
         device=None,
         dtype=None,
@@ -240,24 +241,21 @@ class MultiHeadSelfAttention(nn.Module):
         self.device = device
         self.dtype = dtype
 
-        self.query_proj = Linear(
+        if self.use_causal:
+            mask = torch.triu(
+                torch.ones((max_seq_len, max_seq_len), dtype=bool), diagonal=1
+            )
+            self.register_buffer(
+                "causal_mask", mask.view(1, 1, max_seq_len, max_seq_len)
+            )
+
+        self.qkv_proj = Linear(
             in_features=self.d_model,
-            out_features=self.d_model,
+            out_features=3 * self.d_model,
             device=self.device,
             dtype=self.dtype,
         )
-        self.key_proj = Linear(
-            in_features=self.d_model,
-            out_features=self.d_model,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        self.value_proj = Linear(
-            in_features=self.d_model,
-            out_features=self.d_model,
-            device=self.device,
-            dtype=self.dtype,
-        )
+
         self.out_proj = Linear(
             in_features=self.d_model,
             out_features=self.d_model,
@@ -267,19 +265,13 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, input: torch.Tensor):  # input is #batch x nseq x d_model
 
-        q = rearrange(self.query_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
-        k = rearrange(self.key_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
-        v = rearrange(self.value_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
-        batch_dim, head_dim, seq_dim, _ = k.shape
-        mask = self._construct_mask((batch_dim, head_dim, seq_dim, seq_dim))
+        seq_len = input.shape[1]
+        # qkv is of size batch_size (b) x n_seq (s) x (p*d_model), where p = 3 (query, key, val)
+        qkv = self.qkv_proj(input)
+        # the third dimensions of qkv can be split as (p* d_model) -> (p h, d), where h*d = d_model
+        q, k, v = rearrange(qkv, "b s (p h d) -> p b h s d", p=3, h=self.n_heads)
+        # truncating mask to input sequence length
+        mask = self.causal_mask[:, :, :seq_len, :seq_len] if self.use_causal else None
         attn = scaled_dot_product_attention(q, k, v, mask)
-        attn = rearrange(attn, " b h s d -> b s (h d)", h = self.n_heads)
+        attn = rearrange(attn, " b h s d -> b s (h d)", h=self.n_heads)
         return self.out_proj(attn)
-
-    def _construct_mask(self, mask_shape: tuple):
-
-        mask = torch.ones(*mask_shape, dtype=bool)
-        if self.use_causal:
-            mask = rearrange(torch.triu(mask), "b h k q -> b h q k")
-
-        return mask

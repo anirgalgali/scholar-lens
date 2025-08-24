@@ -17,11 +17,9 @@ def scaled_dot_product_attention(
     d_k = Q.shape[-1]
     scores = einsum(Q, K, "... q d, ... k d -> ... q k")
     scores /= d_k**0.5  # raw scores
-
     # mask out with -inf pre softmax for implementing causal mechanism
     if mask is not None:
-        scores = scores.masked_fill(~mask, float("-inf"))
-
+        scores = scores.masked_fill(mask, float("-inf"))
     attn = softmax(scores, dim=-1)
     output = einsum(attn, V, "... q k, ... k d -> ... q d")
     return output

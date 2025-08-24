@@ -79,7 +79,7 @@ def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
 
 
 def test_scaled_dot_product_attention(numpy_snapshot, q, k, v, mask):
-    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=mask)
+    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=~mask)
     numpy_snapshot.assert_match(actual_output, atol=1e-6)
 
 
@@ -91,7 +91,7 @@ def test_4d_scaled_dot_product_attention(numpy_snapshot, q, k, v, mask):
     )
     mask = rearrange(mask, "(batch head) query key -> batch head query key", head=2)
 
-    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=mask)
+    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=~mask)
     numpy_snapshot.assert_match(
         actual_output,
         atol=1e-6,
@@ -106,21 +106,22 @@ def test_multihead_self_attention(
         d[f"layers.0.attn.{k}_proj.weight"] for k in ["q", "k", "v", "output"]
     ]
 
+    max_seq_len = 2*in_embeddings.shape[1]
     attention_layer = MultiHeadSelfAttention(
         embedding_dim=d_model,
         n_heads=n_heads,
+        max_seq_len=max_seq_len,
         use_causal_mask=True,
         device="cpu",
         dtype=torch.float32,
     )
 
+    qkv_weights = torch.concatenate(
+        (q_proj_weight, k_proj_weight, v_proj_weight), dim=0
+    )
+
     attention_layer.load_state_dict(
-        {
-            "query_proj.weight": q_proj_weight,
-            "key_proj.weight": k_proj_weight,
-            "value_proj.weight": v_proj_weight,
-            "out_proj.weight": o_proj_weight,
-        }
+        {"qkv_proj.weight": qkv_weights, "out_proj.weight": o_proj_weight}, strict=False
     )
 
     actual_output = attention_layer(in_embeddings)
