@@ -8,8 +8,9 @@ from mintransformer.layers import (
     RMSNorm,
     LayerNorm,
     PositionWiseFeedForward,
+    MultiHeadSelfAttention,
 )
-from src.mintransformer.functional import SiLU
+from src.mintransformer.functional import SiLU, scaled_dot_product_attention
 
 
 def test_linear(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
@@ -53,6 +54,7 @@ def test_layernorm(in_embeddings):
         my_output, reference_output, atol=1e-6
     ), "Forward pass outputs do not match!"
 
+
 def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
     w1_weight, w2_weight, w3_weight = [
         ts_state_dict[0][f"layers.0.ffn.{k}.weight"] for k in ["w1", "w2", "w3"]
@@ -74,3 +76,52 @@ def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
     )
     actual_output = swiglu(in_embeddings)
     numpy_snapshot.assert_match(actual_output, atol=1e-5)
+
+
+def test_scaled_dot_product_attention(numpy_snapshot, q, k, v, mask):
+    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=mask)
+    numpy_snapshot.assert_match(actual_output, atol=1e-6)
+
+
+def test_4d_scaled_dot_product_attention(numpy_snapshot, q, k, v, mask):
+    # Shape: (batch_size, num_heads, seq_len, d_k)
+    q, k, v = (
+        rearrange(x, "(batch head) seq d -> batch head seq d", head=2)
+        for x in (q, k, v)
+    )
+    mask = rearrange(mask, "(batch head) query key -> batch head query key", head=2)
+
+    actual_output = scaled_dot_product_attention(Q=q, K=k, V=v, mask=mask)
+    numpy_snapshot.assert_match(
+        actual_output,
+        atol=1e-6,
+    )
+
+
+def test_multihead_self_attention(
+    numpy_snapshot, in_embeddings, d_model, n_heads, ts_state_dict
+):
+    d, _ = ts_state_dict
+    q_proj_weight, k_proj_weight, v_proj_weight, o_proj_weight = [
+        d[f"layers.0.attn.{k}_proj.weight"] for k in ["q", "k", "v", "output"]
+    ]
+
+    attention_layer = MultiHeadSelfAttention(
+        embedding_dim=d_model,
+        n_heads=n_heads,
+        use_causal_mask=True,
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    attention_layer.load_state_dict(
+        {
+            "query_proj.weight": q_proj_weight,
+            "key_proj.weight": k_proj_weight,
+            "value_proj.weight": v_proj_weight,
+            "out_proj.weight": o_proj_weight,
+        }
+    )
+
+    actual_output = attention_layer(in_embeddings)
+    numpy_snapshot.assert_match(actual_output, atol=1e-6)

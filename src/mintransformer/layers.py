@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import math
+from einops import rearrange
+from src.mintransformer.functional import scaled_dot_product_attention
 
 
 #### LINEAR AND GATED-LINEAR LAYERS
@@ -182,7 +184,7 @@ class RMSNorm(nn.Module):
         return output.to(in_dtype)
 
 
-#### POSITION-WISE FEED-FORWaRD NETWORK
+#### POSITION-WISE FEED-FORWARD NETWORK
 class PositionWiseFeedForward(nn.Module):
 
     def __init__(
@@ -214,3 +216,70 @@ class PositionWiseFeedForward(nn.Module):
     def forward(self, input):
         hidden = self.glu(input)
         return self.output(hidden)
+
+
+#### MULTI-HEAD ATTENTION LAYER
+
+
+class MultiHeadSelfAttention(nn.Module):
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        n_heads: int,
+        use_causal_mask: bool = True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+        self.d_model = embedding_dim
+        self.n_heads = n_heads
+        self.use_causal = use_causal_mask
+        self.d_head = self.d_model // self.n_heads
+        self.device = device
+        self.dtype = dtype
+
+        self.query_proj = Linear(
+            in_features=self.d_model,
+            out_features=self.d_model,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.key_proj = Linear(
+            in_features=self.d_model,
+            out_features=self.d_model,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.value_proj = Linear(
+            in_features=self.d_model,
+            out_features=self.d_model,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.out_proj = Linear(
+            in_features=self.d_model,
+            out_features=self.d_model,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+    def forward(self, input: torch.Tensor):  # input is #batch x nseq x d_model
+
+        q = rearrange(self.query_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
+        k = rearrange(self.key_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
+        v = rearrange(self.value_proj(input), "b s (h d) -> b h s d", h = self.n_heads)
+        batch_dim, head_dim, seq_dim, _ = k.shape
+        mask = self._construct_mask((batch_dim, head_dim, seq_dim, seq_dim))
+        attn = scaled_dot_product_attention(q, k, v, mask)
+        attn = rearrange(attn, " b h s d -> b s (h d)", h = self.n_heads)
+        return self.out_proj(attn)
+
+    def _construct_mask(self, mask_shape: tuple):
+
+        mask = torch.ones(*mask_shape, dtype=bool)
+        if self.use_causal:
+            mask = rearrange(torch.triu(mask), "b h k q -> b h q k")
+
+        return mask

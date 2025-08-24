@@ -1,6 +1,31 @@
 import torch
 import math
 import torch.nn as nn
+from einops import einsum
+
+# Scaled Dot-Product attention (The star of the show)
+
+
+def scaled_dot_product_attention(
+    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor = None
+):
+
+    # Q is the output of W_{q} @ x - # batch x n_seq x d_k
+    # K is the output of W_{k} @ x - # batch x n_seq x d_k
+    # V is the output of W_{v} @ x - # batch x n_seq x d_v
+
+    d_k = Q.shape[-1]
+    scores = einsum(Q, K, "... q d, ... k d -> ... q k")
+    scores /= d_k**0.5  # raw scores
+
+    # mask out with -inf pre softmax for implementing causal mechanism
+    if mask is not None:
+        scores = scores.masked_fill(~mask, float("-inf"))
+
+    attn = softmax(scores, dim=-1)
+    output = einsum(attn, V, "... q k, ... k d -> ... q d")
+    return output
+
 
 # State-less activation function implementation
 
@@ -28,6 +53,7 @@ def softmax(x: torch.Tensor, dim: int):
 
 
 # wrapping a nn.Module around the activation function to make each of them into a module
+
 
 class SiLU(nn.Module):
     """Applies the Sigmoid Linear unit activation function (silu)
