@@ -9,6 +9,7 @@ from mintransformer.layers import (
     LayerNorm,
     PositionWiseFeedForward,
     MultiHeadSelfAttention,
+    RotaryPositionalEmbedding,
 )
 from src.mintransformer.functional import SiLU, scaled_dot_product_attention
 
@@ -106,7 +107,7 @@ def test_multihead_self_attention(
         d[f"layers.0.attn.{k}_proj.weight"] for k in ["q", "k", "v", "output"]
     ]
 
-    max_seq_len = 2*in_embeddings.shape[1]
+    max_seq_len = 2 * in_embeddings.shape[1]
     attention_layer = MultiHeadSelfAttention(
         embedding_dim=d_model,
         n_heads=n_heads,
@@ -126,3 +127,10 @@ def test_multihead_self_attention(
 
     actual_output = attention_layer(in_embeddings)
     numpy_snapshot.assert_match(actual_output, atol=1e-6)
+
+
+def test_rope(numpy_snapshot, in_embeddings, d_model, theta, n_queries, pos_ids):
+
+    rope = RotaryPositionalEmbedding(thetaN=theta, d_k=d_model, max_seq_len=n_queries)
+    output = rope(input=in_embeddings, token_positions=pos_ids)
+    numpy_snapshot.assert_match(output, atol=1e-6)

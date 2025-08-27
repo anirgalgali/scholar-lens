@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from einops import rearrange
+from einops import rearrange, einsum
 from src.mintransformer.functional import scaled_dot_product_attention
 
 
@@ -21,9 +21,7 @@ class Linear(nn.Module):
         self.dtype = dtype
         self.device = device
         self.weight = nn.Parameter(
-            torch.empty(
-                (out_features, in_features), device=self.device, dtype=self.dtype
-            ),
+            torch.empty((out_features, in_features), device=self.device, dtype=self.dtype),
             requires_grad=True,
         )
         if bias:
@@ -38,13 +36,9 @@ class Linear(nn.Module):
 
     def _initialize(self):
         init_std = math.sqrt(2.0 / (self.in_features + self.out_features))
-        torch.nn.init.trunc_normal_(
-            self.weight, 0.0, std=init_std, a=-3 * init_std, b=3 * init_std
-        )
+        torch.nn.init.trunc_normal_(self.weight, 0.0, std=init_std, a=-3 * init_std, b=3 * init_std)
         if self.bias is not None:
-            torch.nn.init.trunc_normal_(
-                self.bias, mean=0, std=init_std, a=-3 * init_std, b=3 * init_std
-            )
+            torch.nn.init.trunc_normal_(self.bias, mean=0, std=init_std, a=-3 * init_std, b=3 * init_std)
 
     def forward(self, input):  # input is [batch_dims, dim]
         if self.bias is not None:
@@ -68,12 +62,8 @@ class GatedLinearUnit(nn.Module):
         self.activation = activation
         self.device = device
         self.dtype = dtype
-        self.proj_up = Linear(
-            self.in_features, self.out_features, device=self.device, dtype=self.dtype
-        )
-        self.proj_gate = Linear(
-            self.in_features, self.out_features, device=self.device, dtype=self.dtype
-        )
+        self.proj_up = Linear(self.in_features, self.out_features, device=self.device, dtype=self.dtype)
+        self.proj_gate = Linear(self.in_features, self.out_features, device=self.device, dtype=self.dtype)
         self.activation = activation
 
     def forward(self, input):
@@ -85,18 +75,14 @@ class GatedLinearUnit(nn.Module):
 #### EMBEDDING AND UNEMBEDDING LAYERS
 class Embedding(nn.Module):
 
-    def __init__(
-        self, num_embeddings: int, embedding_dim: int, device=None, dtype=None
-    ):
+    def __init__(self, num_embeddings: int, embedding_dim: int, device=None, dtype=None):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.device = device
         self.dtype = dtype
         self.weight = nn.Parameter(
-            torch.empty(
-                (num_embeddings, embedding_dim), device=self.device, dtype=self.dtype
-            ),
+            torch.empty((num_embeddings, embedding_dim), device=self.device, dtype=self.dtype),
             requires_grad=True,
         )
         self._initialize()
@@ -209,9 +195,7 @@ class PositionWiseFeedForward(nn.Module):
             device=self.device,
             dtype=self.dtype,
         )
-        self.output = Linear(
-            in_features=self.d_ff, out_features=self.d_model, device=device, dtype=dtype
-        )
+        self.output = Linear(in_features=self.d_ff, out_features=self.d_model, device=device, dtype=dtype)
 
     def forward(self, input):
         hidden = self.glu(input)
@@ -242,12 +226,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.dtype = dtype
 
         if self.use_causal:
-            mask = torch.triu(
-                torch.ones((max_seq_len, max_seq_len), dtype=bool), diagonal=1
-            )
-            self.register_buffer(
-                "causal_mask", mask.view(1, 1, max_seq_len, max_seq_len)
-            )
+            mask = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=bool), diagonal=1)
+            self.register_buffer("causal_mask", mask.view(1, 1, max_seq_len, max_seq_len))
 
         self.qkv_proj = Linear(
             in_features=self.d_model,
@@ -275,3 +255,41 @@ class MultiHeadSelfAttention(nn.Module):
         attn = scaled_dot_product_attention(q, k, v, mask)
         attn = rearrange(attn, " b h s d -> b s (h d)", h=self.n_heads)
         return self.out_proj(attn)
+    
+#### ROTARY POSITIONAL EMBEDDING
+class RotaryPositionalEmbedding(nn.Module):
+
+    def __init__(self, thetaN: float, d_k: int, max_seq_len: int):
+        super().__init__()
+        self.thetaN = thetaN
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
+
+        pos_array = torch.arange(0, self.max_seq_len, dtype=torch.float32)
+        dim_array = torch.arange(1, self.d_k // 2 + 1, dtype=torch.float32)
+        freq_array = thetaN ** (-2.0 * (dim_array - 1) / self.d_k)
+        freq_array = freq_array[:, None].repeat(1, 2).reshape(-1)
+        all_thetas = einsum(pos_array, freq_array, "s, d -> s d")
+        self.register_buffer(
+            "cos_theta",
+            torch.cos(all_thetas).view(1, self.max_seq_len, self.d_k),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sin_theta",
+            torch.sin(all_thetas).view(1, self.max_seq_len, self.d_k),
+            persistent=False,
+        )
+
+        flip_matrix = torch.diagflat(-1 * torch.ones(1,),offset=1)
+        flip_matrix += torch.diagflat(1 * torch.ones(1,),offset=-1)
+        self.register_buffer( "flip_matrix",
+                             torch.block_diag(*flip_matrix[None, :, :].expand(self.d_k // 2, -1, -1)), 
+                             persistent=False)
+
+    def forward(self, input: torch.tensor, token_positions: torch.tensor):
+
+        input_rot = (self.cos_theta[..., token_positions, :] * input) + self.sin_theta[..., token_positions, :] * (
+            einsum(self.flip_matrix, input, "d1 d2, b s d2 -> b s d1")
+        )
+        return input_rot
