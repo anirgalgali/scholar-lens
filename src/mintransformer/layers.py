@@ -203,8 +203,6 @@ class PositionWiseFeedForward(nn.Module):
 
 
 #### MULTI-HEAD ATTENTION LAYER
-
-
 class MultiHeadSelfAttention(nn.Module):
 
     def __init__(
@@ -213,6 +211,7 @@ class MultiHeadSelfAttention(nn.Module):
         n_heads: int,
         max_seq_len: int,
         use_causal_mask: bool = True,
+        rope_module: nn.Module = None,
         device=None,
         dtype=None,
     ):
@@ -221,6 +220,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.d_model = embedding_dim
         self.n_heads = n_heads
         self.use_causal = use_causal_mask
+        self.rope = rope_module
         self.d_head = self.d_model // self.n_heads
         self.device = device
         self.dtype = dtype
@@ -243,19 +243,25 @@ class MultiHeadSelfAttention(nn.Module):
             dtype=self.dtype,
         )
 
-    def forward(self, input: torch.Tensor):  # input is #batch x nseq x d_model
+    def forward(self, input: torch.Tensor, pos_ids: torch.Tensor = None):  # input is #batch x nseq x d_model
 
         seq_len = input.shape[1]
         # qkv is of size batch_size (b) x n_seq (s) x (p*d_model), where p = 3 (query, key, val)
         qkv = self.qkv_proj(input)
         # the third dimensions of qkv can be split as (p* d_model) -> (p h, d), where h*d = d_model
         q, k, v = rearrange(qkv, "b s (p h d) -> p b h s d", p=3, h=self.n_heads)
+
+        if self.rope is not None:
+            q = self.rope(q, pos_ids)
+            k = self.rope(k, pos_ids)
+
         # truncating mask to input sequence length
         mask = self.causal_mask[:, :, :seq_len, :seq_len] if self.use_causal else None
         attn = scaled_dot_product_attention(q, k, v, mask)
         attn = rearrange(attn, " b h s d -> b s (h d)", h=self.n_heads)
         return self.out_proj(attn)
-    
+
+
 #### ROTARY POSITIONAL EMBEDDING
 class RotaryPositionalEmbedding(nn.Module):
 
@@ -281,15 +287,27 @@ class RotaryPositionalEmbedding(nn.Module):
             persistent=False,
         )
 
-        flip_matrix = torch.diagflat(-1 * torch.ones(1,),offset=1)
-        flip_matrix += torch.diagflat(1 * torch.ones(1,),offset=-1)
-        self.register_buffer( "flip_matrix",
-                             torch.block_diag(*flip_matrix[None, :, :].expand(self.d_k // 2, -1, -1)), 
-                             persistent=False)
+        flip_matrix = torch.diagflat(
+            -1
+            * torch.ones(
+                1,
+            ),
+            offset=1,
+        )
+        flip_matrix += torch.diagflat(
+            1
+            * torch.ones(
+                1,
+            ),
+            offset=-1,
+        )
+        self.register_buffer(
+            "flip_matrix", torch.block_diag(*flip_matrix[None, :, :].expand(self.d_k // 2, -1, -1)), persistent=False
+        )
 
     def forward(self, input: torch.tensor, token_positions: torch.tensor):
 
         input_rot = (self.cos_theta[..., token_positions, :] * input) + self.sin_theta[..., token_positions, :] * (
-            einsum(self.flip_matrix, input, "d1 d2, b s d2 -> b s d1")
+            einsum(self.flip_matrix, input, "d1 d2, ... s d2 -> ... s d1")
         )
         return input_rot
