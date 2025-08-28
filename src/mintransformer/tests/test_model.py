@@ -57,9 +57,9 @@ def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
     )
     swiglu.load_state_dict(
         {
-            "ff_mlp.glu.proj_up.weight": w1_weight,
-            "ff_mlp.glu.proj_gate.weight": w3_weight,
-            "ff_mlp.fc_out.weight": w2_weight,
+            "net.glu.proj_up.weight": w1_weight,
+            "net.glu.proj_gate.weight": w3_weight,
+            "net.fc_out.weight": w2_weight,
         }
     )
     actual_output = swiglu(in_embeddings)

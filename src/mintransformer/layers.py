@@ -242,10 +242,10 @@ class PositionWiseFeedForward(nn.Module):
                 in_features=self.d_ff, out_features=self.d_model, bias=self.bias, device=device, dtype=dtype
             )
 
-        self.ff_mlp = nn.Sequential(network_dict)
+        self.net = nn.Sequential(network_dict)
 
     def forward(self, input):
-        return self.ff_mlp(input)
+        return self.net(input)
 
 
 #### MULTI-HEAD ATTENTION LAYER
@@ -357,9 +357,3 @@ class RotaryPositionalEmbedding(nn.Module):
             einsum(self.flip_matrix, input, "d1 d2, ... s d2 -> ... s d1")
         )
         return input_rot
-
-
-if __name__ == "__main__":
-    swiglu = PositionWiseFeedForward(
-        embedding_dim=64, activation_type="silu", is_gated=True, device="cpu", dtype=torch.float32
-    )
