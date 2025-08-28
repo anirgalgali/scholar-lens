@@ -52,19 +52,14 @@ def test_layernorm(in_embeddings):
 
 def test_swiglu(numpy_snapshot, ts_state_dict, in_embeddings, d_model, d_ff):
     w1_weight, w2_weight, w3_weight = [ts_state_dict[0][f"layers.0.ffn.{k}.weight"] for k in ["w1", "w2", "w3"]]
-
     swiglu = PositionWiseFeedForward(
-        embedding_dim=d_model,
-        ff_dim=d_ff,
-        activation=SiLU(),
-        device="cpu",
-        dtype=torch.float32,
+        embedding_dim=d_model, activation_type="silu", is_gated=True, ff_dim=d_ff, device="cpu", dtype=torch.float32
     )
     swiglu.load_state_dict(
         {
-            "glu.proj_up.weight": w1_weight,
-            "glu.proj_gate.weight": w3_weight,
-            "output.weight": w2_weight,
+            "ff_mlp.glu.proj_up.weight": w1_weight,
+            "ff_mlp.glu.proj_gate.weight": w3_weight,
+            "ff_mlp.fc_out.weight": w2_weight,
         }
     )
     actual_output = swiglu(in_embeddings)
