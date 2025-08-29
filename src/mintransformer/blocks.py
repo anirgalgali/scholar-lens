@@ -2,6 +2,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from . import layers
+from . import config
 
 
 class TransformerBlock(nn.Module):
@@ -9,15 +10,8 @@ class TransformerBlock(nn.Module):
     def __init__(
         self,
         d_model: int,
-        n_heads: int,
-        max_seq_len: int,
-        norm_position: str,
-        norm_type: str,
-        causal_attn: bool,
-        ffn_activation: str,
-        ffn_type: str,
-        ff_dim: Optional[int] = None,
-        bias: bool = False,  # whether to include bias term in Feedforward network and layernorm
+        context_length: int,
+        block_config: config.TransformerConfig,
         rope_module: nn.Module = None,
         device=None,
         dtype=None,
@@ -26,68 +20,52 @@ class TransformerBlock(nn.Module):
         super().__init__()
         valid_norm_positions = ["pre", "post"]
 
-        if ffn_type.lower() == "gated":
-            is_gated = True
-        elif ffn_type.lower() == "standard":
-            is_gated = False
-        else:
-            raise ValueError(f"Unidentifiable feed-forward network architecture type: {ffn_type}")
-
-        if not norm_position.lower() in valid_norm_positions:
-            raise ValueError(f"Unidentifiable norm position type: {norm_position}")
+        if not block_config.norm_position.lower() in valid_norm_positions:
+            raise ValueError(f"Unidentifiable norm position type: {block_config.norm_position}")
 
         self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_head = self.d_model // self.n_heads
-        self.max_seq_len = max_seq_len
-        self.causal_attn = causal_attn
-        self.norm_position = norm_position
-        self.norm_type = norm_type
-        self.rope = rope_module
-        self.ffn_activation = ffn_activation
-        self.ffn_type = ffn_type
-        self.bias = bias
-        self.device = device
-        self.dtype = dtype
+        self.norm_position = block_config.norm_position
+        self.norm_type = block_config.norm_type
 
         self.attn = layers.MultiHeadSelfAttention(
-            embedding_dim=self.d_model,
-            n_heads=self.n_heads,
-            max_seq_len=self.max_seq_len,
-            use_causal_mask=self.causal_attn,
+            d_model=self.d_model,
+            context_length=context_length,
+            attention_config=block_config.attn,
+            use_causal_mask=block_config.use_causal_mask,
             rope_module=rope_module,
-            device=self.device,
-            dtype=self.dtype,
+            device=device,
+            dtype=dtype,
         )
 
         # The number of hidden neurons in the feed-foward MLP gets set internally since
         # are not passing it in as an explicit parameter. If using a gated architecture,
         # it gets set to (8/3)*d_model rounded off to the closest multiple of 64
-        # (for maximal GPU efficiency). If using a standard architecture,
+        # (for maximal GPU efficiency). If using a standard architecture, it uses a multiple
+        # of 4. See FFNConfig for details
+
         self.ff = layers.PositionWiseFeedForward(
-            embedding_dim=self.d_model,
-            activation_type=ffn_activation,
-            is_gated=is_gated,
-            bias=self.bias,
-            ff_dim=ff_dim,
-            device=self.device,
-            dtype=self.dtype,
+            d_model=self.d_model,
+            ffn_config=block_config.ffn,
+            device=device,
+            dtype=dtype,
         )
 
         if self.norm_type == "rms":
             # normalization for attention
-            self.norm_attn = layers.RMSNorm(d_hidden=self.d_model, device=self.device, dtype=self.dtype)
+            self.norm_attn = layers.RMSNorm(d_model=self.d_model, device=device, dtype=dtype)
             # normalization for ffn
-            self.norm_ffn = layers.RMSNorm(d_hidden=self.d_model, device=self.device, dtype=self.dtype)
+            self.norm_ffn = layers.RMSNorm(d_model=self.d_model, device=device, dtype=dtype)
 
         elif self.norm_type == "layer":
             # normalization for attention
-            self.norm_attn = layers.LayerNorm(d_hidden=self.d_model, bias=self.bias, device=device, dtype=dtype)
+            self.norm_attn = layers.LayerNorm(d_model=self.d_model, bias=block_config.ln_bias, 
+                                              device=device, dtype=dtype)
             # normalization for ffn
-            self.norm_ffn = layers.RMSNorm(d_hidden=self.d_model, bias=self.bias, device=self.device, dtype=self.dtype)
+            self.norm_ffn = layers.LayerNorm(d_model=self.d_model, bias=block_config.ln_bias, 
+                                              device=device, dtype=dtype)
         else:
 
-            raise ValueError(f"Unknown normalization llayer type: {self.norm_type}")
+            raise ValueError(f"Unknown normalization layer type: {self.norm_type}")
 
     def _attention_computation(self, input: torch.Tensor, pos_ids: torch.tensor = None):
 
@@ -107,3 +85,61 @@ class TransformerBlock(nn.Module):
 
         attn_out = self._attention_computation(input, position_ids)
         return self._feedforward_computation(attn_out)
+
+
+class Decoder(nn.Module):
+
+    def __init__(self, config: config.ArchitectureConfig, 
+                 rope_module: nn.Module = None,
+                 device = None, dtype = None):
+        super().__init__()
+        self.d_model = config.d_model
+        self.num_layers = config.num_decoder_layers
+        self.layers = nn.ModuleList(
+            [TransformerBlock(d_model=self.d_model, 
+                              context_length=config.context_length, 
+                              block_config=config.transformer, 
+                              rope_module=rope_module,
+                              device=device,
+                              dtype = dtype) for _ in range(self.num_layers)])
+        if config.transformer.norm_type == "rms":
+            self.final_norm = layers.RMSNorm(d_model=self.d_model, device=device, dtype=dtype)
+        elif config.transformer.norm_type == "layer":
+            self.final_norm = layers.LayerNorm(d_model=self.d_model,bias=config.transformer.ln_bias,
+                                                device=device, dtype=dtype)
+        else:
+            raise ValueError(f"Unknown normalization layer type: {config.transformer.norm_type}")
+
+    def forward(self, input: torch.Tensor, position_ids: torch.Tensor):
+
+        for layer in self.layers:
+            input = layer(input, position_ids)
+
+        return self.final_norm(input)
+    
+class Encoder(nn.Module):
+
+    def __init__(self, config: config.ArchitectureConfig, 
+                 rope_module: nn.Module = None,
+                 device = None, dtype = None):
+        
+        super().__init__()
+        if config.transformer.use_causal_mask:
+            raise ValueError( "use_causal_mask should be False for an encoder")
+        
+        self.d_model = config.d_model
+        self.num_layers = config.num_decoder_layers
+        self.layers = nn.ModuleList(
+            [TransformerBlock(d_model=self.d_model, 
+                              context_length=config.context_length, 
+                              block_config=config.transformer, 
+                              rope_module=rope_module,
+                              device=device,
+                              dtype = dtype) for _ in range(self.num_layers)])
+
+    def forward(self, input: torch.Tensor, position_ids: torch.Tensor):
+
+        for layer in self.layers:
+            input = layer(input, position_ids)
+
+        return input
