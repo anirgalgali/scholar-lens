@@ -100,7 +100,8 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList(
             [TransformerBlock(d_model=self.d_model, 
                               context_length=config.context_length, 
-                              block_config=config.transformer, 
+                              block_config=config.transformer,
+                              dropout = config.dropout, 
                               rope_module=rope_module,
                               device=device,
                               dtype = dtype) for _ in range(self.n_layers)])
@@ -130,14 +131,17 @@ class Encoder(nn.Module):
             raise ValueError( "use_causal_mask should be False for an encoder")
         
         self.d_model = config.d_model
-        self.num_layers = config.num_decoder_layers
+        self.n_layers = config.n_layers
         self.layers = nn.ModuleList(
             [TransformerBlock(d_model=self.d_model, 
                               context_length=config.context_length, 
-                              block_config=config.transformer, 
+                              block_config=config.transformer,
+                              dropout = config.dropout, 
                               rope_module=rope_module,
                               device=device,
-                              dtype = dtype) for _ in range(self.num_layers)])
+                              dtype = dtype) for _ in range(self.n_layers)])
+        
+
 
     def forward(self, input: torch.Tensor, position_ids: torch.Tensor):
 

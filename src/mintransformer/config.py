@@ -47,7 +47,6 @@ class DistilBERTConfig(ArchitectureConfig):
     context_length: int = 512
     pos_embedding_type: PositionEmbeddingType = "absolute"
     dropout: float = 0.1
-    share_embed_lmhead_wts: bool = False
     transformer: Optional[TransformerConfig] = None 
 
     def __post_init__(self):
@@ -73,12 +72,6 @@ class DecoderLMConfigTest(ArchitectureConfig):
     pos_embedding_type: PositionEmbeddingType = "rope"
     dropout: float = 0.0
     share_embed_lmhead_wts: bool = False
-    # def __post_init__(self):
-    #     if self.pos_embedding_type != 'rope' and self.theta is not None:
-    #         raise ValueError(
-    #             f"rope_theta is set to {self.theta} but pos_embedding_type "
-    #             f"is '{self.pos_embedding_type}'. theta is only applicable when "
-    #             "pos_embedding_type is 'rope'."
-    #         )
+
         
 
