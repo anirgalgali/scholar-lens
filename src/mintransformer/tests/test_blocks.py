@@ -6,7 +6,7 @@ from src.mintransformer.utils import (
     state_dict_mapper_tests_transformerblock,
     state_dict_mapper_tests_transformerlm
 )
-from src.mintransformer.config import TransformerConfig, FFNConfig,SelfAttentionConfig, ArchitectureConfig
+from src.mintransformer.config import TransformerConfig, DecoderLMConfigTest, FFNConfig, SelfAttentionConfig
 from src.mintransformer.models.causal_llm import TransformerLM
 
 def test_transformer_block(numpy_snapshot, ts_state_dict, in_embeddings, d_model, n_heads, d_ff, n_keys, theta):
@@ -35,7 +35,6 @@ def test_transformer_block(numpy_snapshot, ts_state_dict, in_embeddings, d_model
 def test_transformer_lm(
     numpy_snapshot,
     vocab_size,
-    n_keys,
     d_model,
     n_layers,
     n_heads,
@@ -44,11 +43,13 @@ def test_transformer_lm(
     ts_state_dict,
     in_indices):
 
-    config = ArchitectureConfig(d_model = d_model,
-                                num_decoder_layers = n_layers,
-                                vocab_size = vocab_size,
-                                theta = theta,
-                                transformer = TransformerConfig(norm_type = "rms",
+    config = DecoderLMConfigTest(d_model = d_model,
+                                 vocab_size = vocab_size,
+                                 context_length = 512,
+                                 pos_embedding_type = "rope",
+                                 n_layers = n_layers, 
+                                 theta = theta,
+                                 transformer = TransformerConfig(norm_type = "rms",
                                                                 attn=SelfAttentionConfig(n_heads=n_heads),
                                                                 ffn = FFNConfig(hidden_dim_multiplier=
                                                                                 d_ff/d_model)))
@@ -58,3 +59,39 @@ def test_transformer_lm(
     _ = state_dict_mapper_tests_transformerlm(ts_state_dict[0], transformer_lm)
     actual_output = transformer_lm(in_indices)
     numpy_snapshot.assert_match(actual_output, atol=1e-4, rtol=1e-2)
+
+def test_transformer_lm_truncated_input(
+    numpy_snapshot,
+    vocab_size,
+    d_model,
+    n_layers,
+    n_heads,
+    d_ff,
+    theta,
+    ts_state_dict,
+    in_indices):
+
+
+    config = DecoderLMConfigTest(d_model = d_model,
+                                 vocab_size = vocab_size,
+                                 context_length = 512,
+                                 pos_embedding_type = "rope",
+                                 n_layers = n_layers, 
+                                 theta = theta,
+                                 transformer = TransformerConfig(norm_type = "rms",
+                                                                attn=SelfAttentionConfig(n_heads=n_heads),
+                                                                ffn = FFNConfig(hidden_dim_multiplier=
+                                                                                d_ff/d_model)))
+
+    transformer_lm = TransformerLM(config, device ="cpu", dtype = torch.float32)
+        
+    _ = state_dict_mapper_tests_transformerlm(ts_state_dict[0], transformer_lm)
+
+
+    in_indices_truncated = in_indices[..., : in_indices.shape[-1] // 2]
+    truncated_actual_output = transformer_lm(in_indices_truncated)
+    
+    numpy_snapshot.assert_match(
+        truncated_actual_output,
+        atol=1e-4,
+    )

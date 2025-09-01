@@ -2,17 +2,16 @@ import torch
 import torch.nn as nn
 from ..layers import Embedding, Linear, RotaryPositionalEmbedding
 from ..blocks import Decoder
-from ..config import ArchitectureConfig
+from ..config import DecoderLMConfigTest
 
 class TransformerLM(nn.Module):
-    def __init__(self, config: ArchitectureConfig,
+    def __init__(self, config: DecoderLMConfigTest,
                  device = None, dtype = None):
         super().__init__()
         self.d_model = config.d_model
         self.context_length = config.context_length
         self.vocab_size = config.vocab_size
-        self.num_decoder_layers = config.num_decoder_layers
-        self.num_encoder_layers = config.num_encoder_layers
+        self.n_layers = config.n_layers
         self.token_embed = Embedding(self.vocab_size, self.d_model, device = device, dtype = dtype)
         self.rope_module = RotaryPositionalEmbedding(theta = config.theta,
                                                      d_head=config.d_model//config.transformer.attn.n_heads,
