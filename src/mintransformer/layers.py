@@ -168,7 +168,7 @@ class RMSNorm(nn.Module):
 #### POSITION-WISE FEED-FORWARD NETWORK
 class PositionWiseFeedForward(nn.Module):
 
-    def __init__(self, d_model: int, ffn_config: config.FFNConfig, device=None, dtype=None):
+    def __init__(self, d_model: int, ffn_config: config.FFNConfig, dropout: float = None, device=None, dtype=None):
 
         super().__init__()
         all_activations = {"silu": SiLU,
@@ -206,6 +206,9 @@ class PositionWiseFeedForward(nn.Module):
                 device=device, dtype=dtype
             )
 
+            if dropout is not None:
+                network_dict["dropout"] = nn.Dropout(p=dropout)
+
         else:
 
             network_dict["fc_in"] = Linear(
@@ -221,6 +224,9 @@ class PositionWiseFeedForward(nn.Module):
                 bias=ffn_config.bias, 
                 device=device, dtype=dtype
             )
+
+            if dropout is not None:
+                network_dict["dropout"] = nn.Dropout(p=dropout)
 
         self.net = nn.Sequential(network_dict)
 
@@ -263,6 +269,8 @@ class MultiHeadSelfAttention(nn.Module):
             dtype=dtype,
         )
 
+        self.dropout = nn.Dropout(attention_config.dropout_attn)
+
         self.out_proj = Linear(
             in_features=self.d_model, out_features=self.d_model, bias=attention_config.bias, device=device, dtype=dtype
         )
@@ -283,7 +291,7 @@ class MultiHeadSelfAttention(nn.Module):
 
         # truncating mask to input sequence length
         mask = self.causal_mask[:, :, :seq_len, :seq_len] if self.use_causal_mask else None
-        attn = scaled_dot_product_attention(q, k, v, mask)
+        attn = scaled_dot_product_attention(q, k, v, mask, dropout = self.dropout)
         attn = rearrange(attn, " b h s d -> b s (h d)", h=self.n_heads)
         return self.out_proj(attn)
 

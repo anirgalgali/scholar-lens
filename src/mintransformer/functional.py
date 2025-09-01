@@ -1,13 +1,17 @@
 import torch
 import math
+from typing import Optional
 import torch.nn as nn
 from einops import einsum
 
 # Scaled Dot-Product attention (The star of the show)
 
 
-def scaled_dot_product_attention(
-    Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor = None
+def scaled_dot_product_attention(Q: torch.Tensor, 
+                                 K: torch.Tensor, 
+                                 V: torch.Tensor, 
+                                 mask: torch.Tensor = None,
+                                 dropout : Optional[nn.Module] = None
 ):
 
     # Q is the output of W_{q} @ x - # batch x n_seq x d_k
@@ -21,6 +25,10 @@ def scaled_dot_product_attention(
     if mask is not None:
         scores = scores.masked_fill(mask, float("-inf"))
     attn = softmax(scores, dim=-1)
+
+    if dropout is not None:
+        attn = dropout(attn)
+
     output = einsum(attn, V, "... q k, ... k d -> ... q d")
     return output
 

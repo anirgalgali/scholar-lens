@@ -12,6 +12,7 @@ class TransformerBlock(nn.Module):
         d_model: int,
         context_length: int,
         block_config: config.TransformerConfig,
+        dropout: Optional[float] = None,
         rope_module: nn.Module = None,
         device=None,
         dtype=None,
@@ -46,6 +47,7 @@ class TransformerBlock(nn.Module):
         self.ff = layers.PositionWiseFeedForward(
             d_model=self.d_model,
             ffn_config=block_config.ffn,
+            dropout = dropout,
             device=device,
             dtype=dtype,
         )
@@ -94,14 +96,14 @@ class Decoder(nn.Module):
                  device = None, dtype = None):
         super().__init__()
         self.d_model = config.d_model
-        self.num_layers = config.num_decoder_layers
+        self.n_layers = config.n_layers
         self.layers = nn.ModuleList(
             [TransformerBlock(d_model=self.d_model, 
                               context_length=config.context_length, 
                               block_config=config.transformer, 
                               rope_module=rope_module,
                               device=device,
-                              dtype = dtype) for _ in range(self.num_layers)])
+                              dtype = dtype) for _ in range(self.n_layers)])
         if config.transformer.norm_type == "rms":
             self.final_norm = layers.RMSNorm(d_model=self.d_model, device=device, dtype=dtype)
         elif config.transformer.norm_type == "layer":
