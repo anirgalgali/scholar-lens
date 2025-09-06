@@ -13,6 +13,7 @@ class DistilBERT(nn.Module):
         
         super().__init__()
         self.word_embeddings= Embedding(config.vocab_size, config.d_model, device = device, dtype = dtype)
+        # absolute learned position embeddings
         self.pos_embeddings = Embedding(config.context_length, config.d_model, device = device, dtype = dtype)
         self.embedding_norm = LayerNorm(config.d_model, bias = True)
         self.embedding_dropout = nn.Dropout(p = config.dropout)
