@@ -141,8 +141,6 @@ class Encoder(nn.Module):
                               device=device,
                               dtype = dtype) for _ in range(self.n_layers)])
         
-
-
     def forward(self, input: torch.Tensor, position_ids: torch.Tensor):
 
         for layer in self.layers:

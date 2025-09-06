@@ -72,6 +72,5 @@ class DecoderLMConfigTest(ArchitectureConfig):
     pos_embedding_type: PositionEmbeddingType = "rope"
     dropout: float = 0.0
     share_embed_lmhead_wts: bool = False
-
         
 
